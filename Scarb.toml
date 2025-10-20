@@ -1,0 +1,22 @@
+[package]
+name = "sp_strk"
+version = "0.1.0"
+edition = "2024_07"
+
+[dependencies]
+openzeppelin = { git = "https://github.com/OpenZeppelin/cairo-contracts", tag = "v0.20.0"}
+starknet = "2.12.2"
+
+[dev-dependencies]
+snforge_std = "0.50.0"
+assert_macros = "2.12.2"
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
+
+[scripts]
+test = "snforge test"
+
+[tool.scarb]
+allow-prebuilt-plugins = ["snforge_std"]

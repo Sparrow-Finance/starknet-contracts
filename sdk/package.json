@@ -1,0 +1,23 @@
+{
+  "name": "sp_strk_sdk",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "BilalMir135",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "account:deploy": "ts-node src/scripts/deployAccount.ts",
+    "contract:deploy": "ts-node src/scripts/deploy.ts",
+    "contract:upgrade": "ts-node src/scripts/upgrade.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "starknet": "^8.6.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.1"
+  }
+}
