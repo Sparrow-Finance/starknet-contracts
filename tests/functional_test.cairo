@@ -1,20 +1,19 @@
-use starknet::{ContractAddress, get_contract_address};
-use snforge_std::{
-    CheatSpan, load, cheat_caller_address, start_cheat_caller_address, stop_cheat_caller_address,
-    start_cheat_block_timestamp, stop_cheat_block_timestamp, declare, DeclareResultTrait,
-};
-use openzeppelin::token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
 use openzeppelin::access::ownable::interface::{
     OwnableTwoStepABIDispatcher, OwnableTwoStepABIDispatcherTrait,
 };
+use openzeppelin::token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
 use openzeppelin::upgrades::interface::{IUpgradeableDispatcher, IUpgradeableDispatcherTrait};
-
-use sp_strk::sp_strk::spSTRK;
+use snforge_std::{
+    CheatSpan, DeclareResultTrait, cheat_caller_address, declare, load, start_cheat_block_timestamp,
+    start_cheat_caller_address, stop_cheat_block_timestamp, stop_cheat_caller_address,
+};
 use sp_strk::interfaces::sp_strk::{IspSTRK, IspSTRKDispatcher, IspSTRKDispatcherTrait};
-use sp_strk::types::init::InitParams;
 use sp_strk::mock::upgrade::{INewspSTRKDispatcher, INewspSTRKDispatcherTrait};
+use sp_strk::sp_strk::spSTRK;
+use sp_strk::types::init::InitParams;
+use starknet::{ContractAddress, get_contract_address};
 use crate::fixtures::{deploy_contract, deploy_mock_token};
-use crate::utils::{ether, erc20, serialize, deserialize};
+use crate::utils::{deserialize, erc20, ether, serialize};
 
 fn init() -> (IspSTRKDispatcher, ERC20ABIDispatcher) {
     let owner = get_contract_address();
@@ -25,9 +24,9 @@ fn init() -> (IspSTRKDispatcher, ERC20ABIDispatcher) {
             strk_token: strk_token.contract_address,
             dao_fee_basis_points: 500,
             dev_fee_basis_points: 300,
-            min_stake_amount: 10000000000000000, //0.01 STRK
-            unlock_period: 60, //60 sec
-            claim_window: 604800 //7 days
+            min_stake_amount: 10000000000000000,
+            unlock_period: 60,
+            claim_window: 604800,
         },
     );
 
@@ -112,24 +111,6 @@ fn test_below_minimum_stake() {
 }
 
 #[test]
-#[should_panic(expected: ('First deposit too low',))]
-fn test_low_first_stake() {
-    let sp_stark = deploy_contract(
-        InitParams {
-            owner: get_contract_address(),
-            strk_token: deploy_mock_token(get_contract_address()).contract_address,
-            dao_fee_basis_points: 500,
-            dev_fee_basis_points: 300,
-            min_stake_amount: 100000,
-            unlock_period: 60, //60 sec
-            claim_window: 604800 //7 days
-        },
-    );
-
-    sp_stark.stake(100000, 100000);
-}
-
-#[test]
 #[should_panic(expected: ('Slippage exceeded',))]
 fn test_slippage_stake() {
     let (sp_stark, _) = init();
@@ -154,14 +135,14 @@ fn test_deposit() {
 fn test_multiple_deposit() {
     let (sp_stark, strk_token) = init();
 
-    let (user1, user2): (ContractAddress, ContractAddress) = (1.try_into().unwrap(), 2.try_into().unwrap());
-    let (stake_amount_u1, stake_amount_u2) = (ether(10), ether(5));
+    let user1: ContractAddress = 1.try_into().unwrap();
+    let user2: ContractAddress = 2.try_into().unwrap();
+    let stake_amount_u1 = ether(10);
+    let stake_amount_u2 = ether(5);
 
-    //transfer STRK to users
     strk_token.transfer(user1, stake_amount_u1);
     strk_token.transfer(user2, stake_amount_u2);
 
-    //approve and stake for user1
     start_cheat_caller_address(strk_token.contract_address, user1);
     strk_token.approve(sp_stark.contract_address, stake_amount_u1);
     stop_cheat_caller_address(strk_token.contract_address);
@@ -170,7 +151,6 @@ fn test_multiple_deposit() {
     sp_stark.stake(stake_amount_u1, stake_amount_u1);
     stop_cheat_caller_address(sp_stark.contract_address);
 
-    //approve and stake for user2
     start_cheat_caller_address(strk_token.contract_address, user2);
     strk_token.approve(sp_stark.contract_address, stake_amount_u2);
     stop_cheat_caller_address(strk_token.contract_address);
@@ -179,7 +159,6 @@ fn test_multiple_deposit() {
     sp_stark.stake(stake_amount_u2, stake_amount_u2);
     stop_cheat_caller_address(sp_stark.contract_address);
 
-    //check balances and total pooled STRK
     let sp_stark_token = erc20(sp_stark.contract_address);
     assert_eq!(sp_stark_token.balance_of(user1), stake_amount_u1);
     assert_eq!(sp_stark_token.balance_of(user2), stake_amount_u2);
@@ -193,13 +172,14 @@ fn test_multiple_deposit() {
 fn test_ratio_change_deposit() {
     let (sp_stark, strk_token) = init();
 
-    let (user1, user2): (ContractAddress, ContractAddress) = (1.try_into().unwrap(), 2.try_into().unwrap());
-    let (stake_amount_u1, stake_amount_u2) = (ether(10), ether(10));
+    let user1: ContractAddress = 1.try_into().unwrap();
+    let user2: ContractAddress = 2.try_into().unwrap();
+    let stake_amount_u1 = ether(10);
+    let stake_amount_u2 = ether(10);
 
     strk_token.transfer(user1, stake_amount_u1);
     strk_token.transfer(user2, stake_amount_u2);
 
-    //approve and stake for user1
     start_cheat_caller_address(strk_token.contract_address, user1);
     strk_token.approve(sp_stark.contract_address, stake_amount_u1);
     stop_cheat_caller_address(strk_token.contract_address);
@@ -208,12 +188,11 @@ fn test_ratio_change_deposit() {
     sp_stark.stake(stake_amount_u1, stake_amount_u1);
     stop_cheat_caller_address(sp_stark.contract_address);
 
-    // add rewards to the contract to change the spSTRK/STRK ratio
     let rewards = ether(10);
     strk_token.approve(sp_stark.contract_address, rewards);
     sp_stark.add_rewards(rewards);
 
-    let value_after_fees = 9200000000000000000; //10 - (0.5 + 0.3)% 9.2
+    let value_after_fees = 9200000000000000000;
     let (
         total_pooled_STRK,
         total_supply,
@@ -226,21 +205,21 @@ fn test_ratio_change_deposit() {
     ) =
         sp_stark
         .get_stats();
+
     assert_eq!(total_pooled_STRK, stake_amount_u1 + value_after_fees);
     assert_eq!(total_supply, stake_amount_u1);
-    assert_eq!(accumulated_dao_fees, 500000000000000000); //0.5% of 10 STRK
-    assert_eq!(accumulated_dev_fees, 300000000000000000); //0.3% of 10 STRK
-    assert_eq!(exchange_rate, 1920000000000000000); // (10 + 9.2) / 10 = 1.92
+    assert_eq!(accumulated_dao_fees, 500000000000000000);
+    assert_eq!(accumulated_dev_fees, 300000000000000000);
+    assert_eq!(exchange_rate, 1920000000000000000);
 
     let sp_strk_from_strk = sp_stark.preview_stake(ether(1));
-    assert_eq!(
-        sp_strk_from_strk, 520833333333333333,
-    ); // 1 strk = 1 / 1.92 = 0.520833333333333333 spSTRK
-    let strk_from_sp_strk = sp_stark.preview_unlock(ether(1));
-    assert_eq!(strk_from_sp_strk, 1920000000000000000); // 1 spSTRK = 1.92 STRK
+    assert_eq!(sp_strk_from_strk, 520833333333333333);
 
-    let user2_expected = 5208333333333333333; //10 * (10 / 19.2)
-    //approve and stake for user2
+    let strk_from_sp_strk = sp_stark.preview_unlock(ether(1));
+    assert_eq!(strk_from_sp_strk, 1920000000000000000);
+
+    let user2_expected = 5208333333333333333;
+
     start_cheat_caller_address(strk_token.contract_address, user2);
     strk_token.approve(sp_stark.contract_address, stake_amount_u2);
     stop_cheat_caller_address(strk_token.contract_address);
@@ -251,7 +230,6 @@ fn test_ratio_change_deposit() {
 
     let sp_stark_token = erc20(sp_stark.contract_address);
     assert_eq!(sp_stark_token.balance_of(user1), stake_amount_u1);
-
     assert_eq!(sp_stark_token.balance_of(user2), user2_expected);
     assert_eq!(sp_stark_token.total_supply(), stake_amount_u1 + user2_expected);
 }
@@ -291,8 +269,12 @@ fn test_simple_unlock() {
     sp_stark.request_unlock(amount, amount);
     assert_eq!(sp_strk_token.balance_of(user), 0);
 
-    let (request, _, is_ready, is_expired) = sp_stark.get_unlock_request(user);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 1);
+
+    let (request, strk_amount, is_ready, is_expired) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(request.sp_strk_amount, amount);
+    assert_eq!(request.strk_amount, amount);
+    assert_eq!(strk_amount, amount);
     assert_eq!(is_ready, false);
     assert_eq!(is_expired, false);
 }
@@ -318,50 +300,84 @@ fn test_unlock_status() {
         u64,
     >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
 
-    //not ready nor expired
-    let (request, _, is_ready_1, is_expired_1) = sp_stark.get_unlock_request(user);
+    let (request, _, is_ready_1, is_expired_1) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(request.unlock_time, timestamp + unlock_period);
     assert_eq!(request.expiry_time, timestamp + unlock_period + claim_window);
     assert_eq!(is_ready_1, false);
     assert_eq!(is_expired_1, false);
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
-    //should be ready but not expired
     start_cheat_block_timestamp(sp_stark.contract_address, timestamp + unlock_period + 1);
-    let (_, _, is_ready_2, is_expired_2) = sp_stark.get_unlock_request(user);
+    let (_, _, is_ready_2, is_expired_2) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(is_ready_2, true);
     assert_eq!(is_expired_2, false);
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
-    //should be ready and expired
     start_cheat_block_timestamp(
         sp_stark.contract_address, timestamp + unlock_period + claim_window + 1,
     );
-    let (_, _, is_ready_3, is_expired_3) = sp_stark.get_unlock_request(user);
+    let (_, _, is_ready_3, is_expired_3) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(is_ready_3, true);
     assert_eq!(is_expired_3, true);
     stop_cheat_block_timestamp(sp_stark.contract_address);
 }
 
 #[test]
-#[should_panic(expected: ('Unlock request already pending',))]
-fn test_unlock_duplicate() {
+fn test_multiple_unlock_requests() {
+    let (sp_stark, strk) = init();
+
+    let amount = ether(1);
+    let user = get_contract_address();
+
+    strk.approve(sp_stark.contract_address, ether(5));
+    sp_stark.stake(ether(5), ether(5));
+
+    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(amount, amount);
+
+    assert_eq!(sp_stark.get_unlock_request_count(user), 3);
+
+    let (req0, _, _, _) = sp_stark.get_unlock_request(user, 0);
+    let (req1, _, _, _) = sp_stark.get_unlock_request(user, 1);
+    let (req2, _, _, _) = sp_stark.get_unlock_request(user, 2);
+
+    assert_eq!(req0.sp_strk_amount, amount);
+    assert_eq!(req1.sp_strk_amount, amount);
+    assert_eq!(req2.sp_strk_amount, amount);
+}
+
+#[test]
+#[should_panic(expected: ('Too many pending requests',))]
+fn test_max_unlock_requests() {
+    let (sp_stark, strk) = init();
+
+    strk.approve(sp_stark.contract_address, ether(200));
+    sp_stark.stake(ether(200), ether(200));
+
+    let mut i: u256 = 0;
+    loop {
+        if i > 100 {
+            break;
+        }
+        sp_stark.request_unlock(ether(1), ether(1));
+        i += 1;
+    };
+}
+
+#[test]
+#[should_panic(expected: ('Invalid request index',))]
+fn test_claim_unlock_with_invalid_index() {
     let (sp_stark, strk) = init();
 
     let amount = ether(1);
 
-    strk.approve(sp_stark.contract_address, amount + amount);
-    sp_stark.stake(amount + amount, amount + amount);
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.stake(amount, amount);
 
     sp_stark.request_unlock(amount, amount);
-    sp_stark.request_unlock(amount, amount);
-}
 
-#[test]
-#[should_panic(expected: ('Unlock request does not exist',))]
-fn test_claim_unlock_with_no_req() {
-    let (sp_stark, _) = init();
-    sp_stark.claim_unlock();
+    sp_stark.claim_unlock(1);
 }
 
 #[test]
@@ -375,7 +391,7 @@ fn test_claim_unlock_when_not_ready() {
     sp_stark.stake(amount, amount);
 
     sp_stark.request_unlock(amount, amount);
-    sp_stark.claim_unlock();
+    sp_stark.claim_unlock(0);
 }
 
 #[test]
@@ -398,7 +414,7 @@ fn test_claim_unlock_when_expired() {
     >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
 
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + claim_window + 1);
-    sp_stark.claim_unlock();
+    sp_stark.claim_unlock(0);
     stop_cheat_block_timestamp(sp_stark.contract_address);
 }
 
@@ -417,27 +433,108 @@ fn test_successful_claim_unlock() {
 
     sp_stark.request_unlock(amount, amount);
     assert_eq!(sp_strk_token.balance_of(user), 0);
-    //total supply should not change on unlock request
     assert_eq!(sp_strk_token.total_supply(), amount);
 
     let unlock_period: u64 = deserialize::<
         u64,
     >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
-    sp_stark.claim_unlock();
+    sp_stark.claim_unlock(0);
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
     assert_eq!(sp_strk_token.balance_of(user), 0);
     assert_eq!(sp_strk_token.total_supply(), 0);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 0);
 
     assert_eq!(strk.balance_of(get_contract_address()), initial_balance);
 }
 
 #[test]
-#[should_panic(expected: ('Unlock request does not exist',))]
-fn test_cancel_unlock_with_no_req() {
-    let (sp_stark, _) = init();
-    sp_stark.cancel_unlock();
+fn test_exchange_rate_lock() {
+    let (sp_stark, strk) = init();
+
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.stake(amount, amount);
+
+    sp_stark.request_unlock(ether(5), ether(5));
+
+    let rewards = ether(10);
+    strk.approve(sp_stark.contract_address, rewards);
+    sp_stark.add_rewards(rewards);
+
+    let exchange_rate = sp_stark.get_exchange_rate();
+    assert_eq!(exchange_rate, 1920000000000000000);
+
+    let (request, locked_strk, _, _) = sp_stark.get_unlock_request(user, 0);
+    assert_eq!(request.strk_amount, ether(5));
+    assert_eq!(locked_strk, ether(5));
+
+    let unlock_period: u64 = deserialize::<
+        u64,
+    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
+
+    let balance_before = strk.balance_of(user);
+    sp_stark.claim_unlock(0);
+    let balance_after = strk.balance_of(user);
+
+    assert_eq!(balance_after - balance_before, ether(5));
+
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+}
+
+#[test]
+fn test_claim_multiple_unlocks() {
+    let (sp_stark, strk) = init();
+    let sp_strk_token = erc20(sp_stark.contract_address);
+
+    let user = get_contract_address();
+    let amount = ether(1);
+
+    strk.approve(sp_stark.contract_address, ether(3));
+    sp_stark.stake(ether(3), ether(3));
+
+    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(amount, amount);
+
+    assert_eq!(sp_stark.get_unlock_request_count(user), 3);
+
+    let unlock_period: u64 = deserialize::<
+        u64,
+    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
+
+    sp_stark.claim_unlock(1);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 2);
+
+    sp_stark.claim_unlock(0);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 1);
+
+    sp_stark.claim_unlock(0);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 0);
+
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+
+    assert_eq!(sp_strk_token.total_supply(), 0);
+}
+
+#[test]
+#[should_panic(expected: ('Invalid request index',))]
+fn test_cancel_unlock_with_invalid_index() {
+    let (sp_stark, strk) = init();
+
+    let amount = ether(1);
+
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.stake(amount, amount);
+
+    sp_stark.request_unlock(amount, amount);
+
+    sp_stark.cancel_unlock(5);
 }
 
 #[test]
@@ -458,10 +555,59 @@ fn test_successful_cancel_unlock() {
     sp_stark.request_unlock(amount, amount);
     assert_eq!(sp_stark_token.balance_of(user), 0);
     assert_eq!(sp_stark_token.total_supply(), amount);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 1);
 
-    sp_stark.cancel_unlock();
+    sp_stark.cancel_unlock(0);
     assert_eq!(sp_stark_token.balance_of(user), initial_sp_strk_balance);
     assert_eq!(sp_stark_token.total_supply(), amount);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 0);
+}
+
+#[test]
+fn test_claim_expired() {
+    let (sp_stark, strk) = init();
+    let sp_stark_token = erc20(sp_stark.contract_address);
+
+    let amount = ether(1);
+    let user = get_contract_address();
+
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.stake(amount, amount);
+
+    sp_stark.request_unlock(amount, amount);
+    assert_eq!(sp_stark_token.balance_of(user), 0);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 1);
+
+    let unlock_period: u64 = deserialize::<
+        u64,
+    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    let claim_window: u64 = deserialize::<
+        u64,
+    >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
+
+    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + claim_window + 1);
+
+    sp_stark.claim_expired(0);
+
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+
+    assert_eq!(sp_stark_token.balance_of(user), amount);
+    assert_eq!(sp_stark.get_unlock_request_count(user), 0);
+}
+
+#[test]
+#[should_panic(expected: ('Request not expired',))]
+fn test_claim_expired_too_early() {
+    let (sp_stark, strk) = init();
+
+    let amount = ether(1);
+
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.stake(amount, amount);
+
+    sp_stark.request_unlock(amount, amount);
+
+    sp_stark.claim_expired(0);
 }
 
 #[test]
@@ -488,18 +634,46 @@ fn test_withdraw_low_funds() {
 fn test_successful_withdraw() {
     let (sp_stark, strk) = init();
 
-    let amount = ether(1);
+    let stake_amount = ether(100);
+    let withdraw_amount = ether(80);
     let user = get_contract_address();
     let user_init_balance = strk.balance_of(user);
 
-    strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
-    assert_eq!(strk.balance_of(user), user_init_balance - amount);
-    assert_eq!(strk.balance_of(sp_stark.contract_address), amount);
+    // Stake 100 STRK
+    strk.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
+    assert_eq!(strk.balance_of(user), user_init_balance - stake_amount);
+    assert_eq!(strk.balance_of(sp_stark.contract_address), stake_amount);
 
-    sp_stark.withdraw(amount);
-    assert_eq!(strk.balance_of(user), user_init_balance);
-    assert_eq!(strk.balance_of(sp_stark.contract_address), 0);
+    // Withdraw 80 STRK (leaves 20 STRK which is > 10% reserve)
+    sp_stark.withdraw(withdraw_amount);
+    assert_eq!(strk.balance_of(user), user_init_balance - stake_amount + withdraw_amount);
+    assert_eq!(strk.balance_of(sp_stark.contract_address), stake_amount - withdraw_amount);
+}
+
+#[test]
+fn test_withdraw_with_liquidity_reserve() {
+    let (sp_stark, strk) = init();
+
+    strk.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+
+    sp_stark.request_unlock(ether(50), ether(50));
+
+    sp_stark.withdraw(ether(50));
+}
+
+#[test]
+#[should_panic(expected: ('Insufficient liquidity',))]
+fn test_withdraw_exceeds_liquidity_reserve() {
+    let (sp_stark, strk) = init();
+
+    strk.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+
+    sp_stark.request_unlock(ether(50), ether(50));
+
+    sp_stark.withdraw(ether(51));
 }
 
 #[test]
@@ -516,8 +690,8 @@ fn test_fee_claiming() {
 
     let balance_before = strk.balance_of(user);
 
-    assert_eq!(accumulated_dao_fees, 500000000000000000); //0.5% of 10 STRK
-    assert_eq!(accumulated_dev_fees, 300000000000000000); //0.3% of 10 STRK
+    assert_eq!(accumulated_dao_fees, 500000000000000000);
+    assert_eq!(accumulated_dev_fees, 300000000000000000);
 
     sp_stark.collect_dao_fees();
     assert_eq!(strk.balance_of(user), balance_before + accumulated_dao_fees);
@@ -525,10 +699,37 @@ fn test_fee_claiming() {
     sp_stark.collect_dev_fees();
     assert_eq!(strk.balance_of(user), balance_before + accumulated_dao_fees + accumulated_dev_fees);
 
-    let (_, _, _, _, accumulated_dao_fees, accumulated_dev_fees, _, _) = sp_stark.get_stats();
+    let (_, _, _, _, accumulated_dao_fees_after, accumulated_dev_fees_after, _, _) = sp_stark
+        .get_stats();
 
-    assert_eq!(accumulated_dao_fees, 0);
-    assert_eq!(accumulated_dev_fees, 0);
+    assert_eq!(accumulated_dao_fees_after, 0);
+    assert_eq!(accumulated_dev_fees_after, 0);
+}
+
+#[test]
+fn test_collect_all_fees() {
+    let (sp_stark, strk) = init();
+
+    let amount = ether(10);
+    let user = get_contract_address();
+
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.add_rewards(amount);
+
+    let (_, _, _, _, accumulated_dao_fees, accumulated_dev_fees, _, _) = sp_stark.get_stats();
+    let total_fees = accumulated_dao_fees + accumulated_dev_fees;
+
+    let balance_before = strk.balance_of(user);
+
+    sp_stark.collect_all_fees();
+
+    let balance_after = strk.balance_of(user);
+    assert_eq!(balance_after - balance_before, total_fees);
+
+    let (_, _, _, _, accumulated_dao_fees_after, accumulated_dev_fees_after, _, _) = sp_stark
+        .get_stats();
+    assert_eq!(accumulated_dao_fees_after, 0);
+    assert_eq!(accumulated_dev_fees_after, 0);
 }
 
 #[test]
