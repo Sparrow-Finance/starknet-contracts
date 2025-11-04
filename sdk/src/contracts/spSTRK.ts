@@ -349,4 +349,13 @@ export class SpSTRKContract {
     await this.provider.waitForTransaction(result.transaction_hash);
     return result.transaction_hash;
   }
+
+  /**
+   * Transfer ownership (owner only)
+   */
+  async transferOwnership(newOwner: string): Promise<string> {
+    const result = await this.contract.transfer_ownership(newOwner);
+    await this.provider.waitForTransaction(result.transaction_hash);
+    return result.transaction_hash;
+  }
 }
