@@ -6,7 +6,7 @@ pub struct UnlockRequest {
     // Amount of spSTRK shares to unlock
     pub sp_strk_amount: u256,
     // Minimum STRK tokens expected after unlock
-    pub min_strk_out: u256,
+    pub strk_amount: u256,
     // Unlock time in UNIX timestamp
     pub unlock_time: u64,
     // Expiry time in UNIX timestamp
@@ -50,6 +50,8 @@ pub trait IspSTRK<TContractState> {
     fn withdraw(ref self: TContractState, strk_amount: u256);
     /// Add rewards to the staking pool
     fn add_rewards(ref self: TContractState, strk_amount: u256);
+
+    fn collect_all_fees(ref self: TContractState);
     /// Collect accumulated DAO fees
     fn collect_dao_fees(ref self: TContractState);
     /// Collect accumulated developer fees

@@ -1,24 +1,23 @@
 #[starknet::contract]
 pub mod spSTRK {
-    use starknet::{
-        ContractAddress, ClassHash, get_caller_address, get_contract_address, get_block_timestamp,
-    };
-    use starknet::storage::{
-        Map, StoragePointerWriteAccess, StoragePointerReadAccess, StoragePathEntry,
-    };
-    use starknet::event::EventEmitter;
-    use openzeppelin::token::erc20::{
-        ERC20Component, ERC20HooksEmptyImpl, ERC20ABIDispatcher, ERC20ABIDispatcherTrait,
-    };
     use openzeppelin::access::ownable::OwnableComponent;
-    use openzeppelin::upgrades::UpgradeableComponent;
-    use openzeppelin::upgrades::interface::IUpgradeable;
     use openzeppelin::security::pausable::PausableComponent;
     use openzeppelin::security::reentrancyguard::ReentrancyGuardComponent;
-
+    use openzeppelin::token::erc20::{
+        ERC20ABIDispatcher, ERC20ABIDispatcherTrait, ERC20Component, ERC20HooksEmptyImpl,
+    };
+    use openzeppelin::upgrades::UpgradeableComponent;
+    use openzeppelin::upgrades::interface::IUpgradeable;
     use sp_strk::components::constants::Constants;
-    use sp_strk::interfaces::sp_strk::{IspSTRK, UnlockRequest, Errors};
+    use sp_strk::interfaces::sp_strk::{Errors, IspSTRK, UnlockRequest};
     use sp_strk::types::init::InitParams;
+    use starknet::event::EventEmitter;
+    use starknet::storage::{
+        Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
+    };
+    use starknet::{
+        ClassHash, ContractAddress, get_block_timestamp, get_caller_address, get_contract_address,
+    };
 
     // ====================================
     // OpenZeppelin components and their implementations
@@ -78,8 +77,7 @@ pub mod spSTRK {
         dao_fee_basis_points: u16,
         // Developer fee in basis points
         dev_fee_basis_points: u16,
-
-
+        total_locked_in_unlocks: u256,
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -152,6 +150,15 @@ pub mod spSTRK {
     }
 
     #[derive(Drop, starknet::Event)]
+    struct AllFeesCollected {
+        #[key]
+        to: ContractAddress,
+        dao_amount: u256,
+        dev_amount: u256,
+        total_amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
     struct DaoFeesCollected {
         #[key]
         to: ContractAddress,
@@ -200,13 +207,13 @@ pub mod spSTRK {
         Deposited: Deposited,
         Withdrawn: Withdrawn,
         RewardsAdded: RewardsAdded,
+        AllFeesCollected: AllFeesCollected,
         DaoFeesCollected: DaoFeesCollected,
         DevFeesCollected: DevFeesCollected,
         FeesUpdated: FeesUpdated,
         MinStakeAmountUpdated: MinStakeAmountUpdated,
         UnlockPeriodUpdated: UnlockPeriodUpdated,
         ClaimWindowUpdated: ClaimWindowUpdated,
-
         #[flat]
         ERC20Event: ERC20Component::Event,
         #[flat]
@@ -356,7 +363,9 @@ pub mod spSTRK {
             self
                 .unlock_requests
                 .entry(user)
-                .write(UnlockRequest { sp_strk_amount, min_strk_out, unlock_time, expiry_time });
+                .write(UnlockRequest { sp_strk_amount, strk_amount, unlock_time, expiry_time });
+
+            self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() + strk_amount);
 
             // Emit UnlockRequested event
             self
@@ -392,7 +401,7 @@ pub mod spSTRK {
             assert(request.unlock_time <= get_block_timestamp(), Errors::REQUEST_NOT_READY);
 
             // Calculate STRK amount to be received
-            let strk_amount = self._sp_strk_to_strk(request.sp_strk_amount);
+            let strk_amount = request.strk_amount;
 
             // Validate calculated STRK amount
             assert(strk_amount > 0, Errors::INVALID_STRK_AMOUNT);
@@ -402,7 +411,7 @@ pub mod spSTRK {
                 Errors::INSUFFICIENT_STARK,
             );
             // Enforce slippage protection
-            assert(strk_amount >= request.min_strk_out, Errors::SLIPPAGE_EXCEEDED);
+            // assert(strk_amount >= request.min_strk_out, Errors::SLIPPAGE_EXCEEDED);
 
             // Clear the unlock request
             self
@@ -411,13 +420,15 @@ pub mod spSTRK {
                 .write(
                     UnlockRequest {
                         sp_strk_amount: 0_u256,
-                        min_strk_out: 0_u256,
+                        strk_amount: 0_u256,
                         unlock_time: 0_u64,
                         expiry_time: 0_u64,
                     },
                 );
             // Update total pooled STRK
             self.total_pooled_STRK.write(self.total_pooled_STRK.read() - strk_amount);
+
+            self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() - strk_amount);
 
             // Burn spSTRK tokens and transfer STRK tokens to user
             self.erc20.burn(get_contract_address(), request.sp_strk_amount);
@@ -453,7 +464,7 @@ pub mod spSTRK {
                 .write(
                     UnlockRequest {
                         sp_strk_amount: 0_u256,
-                        min_strk_out: 0_u256,
+                        strk_amount: 0_u256,
                         unlock_time: 0_u64,
                         expiry_time: 0_u64,
                     },
@@ -484,7 +495,7 @@ pub mod spSTRK {
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             // Calculate STRK amount to be received
-            let strk_amount = self._sp_strk_to_strk(request.sp_strk_amount);
+            let strk_amount = request.strk_amount;
             // Determine if the request is ready to claim or has expired
             let is_ready = get_block_timestamp() >= request.unlock_time;
             // Ensure the request has not been claimed
@@ -572,8 +583,22 @@ pub mod spSTRK {
             // Validate withdraw amount
             assert(strk_amount > 0, Errors::INVALID_AMOUNT);
             // Ensure contract has enough STRK balance
+
+            let min_reserve = (self.total_pooled_STRK.read() * 1000)
+                / 10000; // 10% minimun liquidity
+
+            let committed_strk = self.accumulated_dao_fees.read()
+                + self.accumulated_dev_fees.read()
+                + self.total_locked_in_unlocks.read();
+
+            let must_keep = if committed_strk > min_reserve {
+                committed_strk
+            } else {
+                min_reserve
+            };
+
             assert(
-                self._strk_balance_of(get_contract_address()) >= strk_amount,
+                self._strk_balance_of(get_contract_address()) >= strk_amount + must_keep,
                 Errors::INSUFFICIENT_STARK,
             );
 
@@ -614,6 +639,38 @@ pub mod spSTRK {
                 .emit(
                     RewardsAdded { total_rewards: strk_amount, user_rewards, dao_fees, dev_fees },
                 );
+        }
+
+        fn collect_all_fees(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            self.reentrancy_guard.start();
+
+            let total_fees = self.accumulated_dao_fees.read() + self.accumulated_dev_fees.read();
+            assert(total_fees > 0, Errors::NO_FEES_TO_COLLECT);
+            assert(
+                self._strk_balance_of(get_contract_address()) >= total_fees,
+                Errors::INSUFFICIENT_STARK,
+            );
+
+            let dao_fees = self.accumulated_dao_fees.read();
+            let dev_fees = self.accumulated_dev_fees.read();
+
+            self.accumulated_dao_fees.write(0_u256);
+            self.accumulated_dev_fees.write(0_u256);
+
+            self._strk_transfer(get_contract_address(), get_caller_address(), total_fees);
+
+            self
+                .emit(
+                    AllFeesCollected {
+                        to: get_caller_address(),
+                        dao_amount: dao_fees,
+                        dev_amount: dev_fees,
+                        total_amount: total_fees,
+                    },
+                );
+
+            self.reentrancy_guard.end();
         }
 
         /// Collect accumulated DAO fees
@@ -678,7 +735,7 @@ pub mod spSTRK {
             self.ownable.assert_only_owner();
             self._set_min_stake_amount(new_amount);
         }
-        
+
         /// Set the unlock period
         /// # Arguments
         /// * `new_period` - The new unlock period in seconds
