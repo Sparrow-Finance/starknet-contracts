@@ -78,7 +78,6 @@ pub trait IspSTRK<TContractState> {
 // Error messages used in the contract
 pub mod Errors {
     pub const BELOW_MINIMUM_STAKE: felt252 = 'Below minimum stake';
-    pub const LOW_FIRST_DEPOSIT: felt252 = 'First deposit too low';
     pub const FEES_TOO_HIGH: felt252 = 'Fees too high';
     pub const INSUFFICIENT_SHARES: felt252 = 'Insufficient shares';
     pub const INSUFFICIENT_BALANCE: felt252 = 'Insufficient balance';

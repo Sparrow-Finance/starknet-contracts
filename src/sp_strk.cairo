@@ -294,14 +294,8 @@ pub mod spSTRK {
             // Calculate spSTRK amount to mint
             let sp_strk_amount = self._strk_to_sp_strk(strk_amount);
 
-            // Enforce minimum first deposit
-            if self.erc20.total_supply() == 0 {
-                // The first deposit must be at least 0.000000000001 STRK
-                assert(strk_amount >= 1000000, Errors::LOW_FIRST_DEPOSIT);
-            } else {
-                // Ensure non-zero shares are minted
-                assert(sp_strk_amount > 0, Errors::INSUFFICIENT_SHARES);
-            }
+            // Ensure non-zero shares are minted
+            assert(sp_strk_amount > 0, Errors::INSUFFICIENT_SHARES);
 
             // Enforce slippage protection
             assert(sp_strk_amount >= min_sp_strk_out, Errors::SLIPPAGE_EXCEEDED);
@@ -698,25 +692,28 @@ pub mod spSTRK {
 
             // Validate withdraw amount
             assert(strk_amount > 0, Errors::INVALID_AMOUNT);
-            // Ensure contract has enough STRK balance
 
-            let min_reserve = (self.total_pooled_STRK.read() * 1000)
-                / 10000; // 10% minimun liquidity
+            // First check: Contract must have enough balance at all
+            let contract_balance = self._strk_balance_of(get_contract_address());
+            assert(contract_balance >= strk_amount, Errors::INSUFFICIENT_STARK);
 
+            // Second check: Calculate minimum reserve (10% of total pooled)
+            let min_reserve = (self.total_pooled_STRK.read() * 1000) / 10000;
+
+            // Calculate committed STRK (fees + locked unlocks)
             let committed_strk = self.accumulated_dao_fees.read()
                 + self.accumulated_dev_fees.read()
                 + self.total_locked_in_unlocks.read();
 
+            // Must keep the larger of min_reserve or committed_strk
             let must_keep = if committed_strk > min_reserve {
                 committed_strk
             } else {
                 min_reserve
             };
 
-            assert(
-                self._strk_balance_of(get_contract_address()) >= strk_amount + must_keep,
-                Errors::INSUFFICIENT_STARK,
-            );
+            // Third check: Ensure we don't withdraw into the reserve
+            assert(contract_balance >= strk_amount + must_keep, 'Insufficient liquidity');
 
             // Transfer STRK tokens to owner
             self._strk_transfer(get_contract_address(), get_caller_address(), strk_amount);
