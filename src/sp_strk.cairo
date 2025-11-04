@@ -454,8 +454,12 @@ pub mod spSTRK {
             let user = get_caller_address();
             let request = self.unlock_requests.entry(user).read();
 
+            let strk_amount = request.strk_amount;
+
             // Ensure a valid unlock request exists
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
+
+            self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() - strk_amount);
 
             // Clear the unlock request
             self
