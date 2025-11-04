@@ -60,7 +60,8 @@ pub mod spSTRK {
         // address of the STRK token contract
         strk_token: ContractAddress,
         // mapping of user address to their unlock request
-        unlock_requests: Map<ContractAddress, UnlockRequest>,
+        unlock_requests: Map<(ContractAddress, u256), UnlockRequest>,
+        unlock_request_count: Map<ContractAddress, u256>,
         // total accumulated DAO fees
         accumulated_dao_fees: u256,
         // total accumulated developer fees
@@ -342,8 +343,8 @@ pub mod spSTRK {
             assert(self.erc20.balance_of(user) >= sp_strk_amount, Errors::INSUFFICIENT_BALANCE);
 
             // Ensure no pending unlock request exists
-            let pending_request = self.unlock_requests.entry(user).read();
-            assert(pending_request.expiry_time == 0, Errors::REQUEST_PENDING);
+            let request_count = self.unlock_request_count.entry(user).read();
+            assert(request_count < Constants::MAX_UNLOCK_REQUESTS, Errors::TOO_MANY_REQUESTS);
 
             // Calculate STRK amount to be received
             let strk_amount = self._sp_strk_to_strk(sp_strk_amount);
@@ -362,8 +363,10 @@ pub mod spSTRK {
             // Store unlock request
             self
                 .unlock_requests
-                .entry(user)
+                .entry((user, request_count))
                 .write(UnlockRequest { sp_strk_amount, strk_amount, unlock_time, expiry_time });
+
+            self.unlock_request_count.entry(user).write(request_count + 1);
 
             self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() + strk_amount);
 
@@ -383,7 +386,7 @@ pub mod spSTRK {
         /// Claim unlocked STRK tokens after the unlock period
         /// # Access Control
         /// The caller must have a valid unlock request that is ready to be claimed
-        fn claim_unlock(ref self: ContractState) {
+        fn claim_unlock(ref self: ContractState, request_index: u256) {
             // Ensure contract is not paused and prevent reentrancy
             self.pausable.assert_not_paused();
             // Start reentrancy guard
@@ -391,7 +394,11 @@ pub mod spSTRK {
 
             // Get caller address and their unlock request
             let user = get_caller_address();
-            let request = self.unlock_requests.entry(user).read();
+            let request_count = self.unlock_request_count.entry(user).read();
+            assert(request_index < request_count, 'Invalid request index');
+
+            let request = self.unlock_requests.entry((user, request_index)).read();
+            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             // Validate unlock request
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
@@ -414,9 +421,15 @@ pub mod spSTRK {
             // assert(strk_amount >= request.min_strk_out, Errors::SLIPPAGE_EXCEEDED);
 
             // Clear the unlock request
+            let last_index = request_count - 1;
+            if request_index != last_index {
+                let last_request = self.unlock_requests.entry((user, last_index)).read();
+                self.unlock_requests.entry((user, request_index)).write(last_request);
+            }
+
             self
                 .unlock_requests
-                .entry(user)
+                .entry((user, last_index))
                 .write(
                     UnlockRequest {
                         sp_strk_amount: 0_u256,
@@ -425,6 +438,9 @@ pub mod spSTRK {
                         expiry_time: 0_u64,
                     },
                 );
+
+            self.unlock_request_count.entry(user).write(last_index);
+
             // Update total pooled STRK
             self.total_pooled_STRK.write(self.total_pooled_STRK.read() - strk_amount);
 
@@ -444,7 +460,7 @@ pub mod spSTRK {
         /// Cancel a pending unlock request and return spSTRK tokens to the user
         /// # Access Control
         /// The caller must have a valid unlock request
-        fn cancel_unlock(ref self: ContractState) {
+        fn cancel_unlock(ref self: ContractState, request_index: u256) {
             // Ensure contract is not paused and prevent reentrancy
             self.pausable.assert_not_paused();
             // Start reentrancy guard
@@ -452,7 +468,13 @@ pub mod spSTRK {
 
             // Get caller address and their unlock request
             let user = get_caller_address();
-            let request = self.unlock_requests.entry(user).read();
+            let request_count = self.unlock_request_count.entry(user).read();
+            assert(request_index < request_count, 'Invalid request index');
+
+            let request = self.unlock_requests.entry((user, request_index)).read();
+
+            // Ensure a valid unlock request exists
+            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             let strk_amount = request.strk_amount;
 
@@ -461,10 +483,17 @@ pub mod spSTRK {
 
             self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() - strk_amount);
 
-            // Clear the unlock request
+            // Remove request by swapping with last element
+            let last_index = request_count - 1;
+            if request_index != last_index {
+                let last_request = self.unlock_requests.entry((user, last_index)).read();
+                self.unlock_requests.entry((user, request_index)).write(last_request);
+            }
+
+            // Clear the last request slot
             self
                 .unlock_requests
-                .entry(user)
+                .entry((user, last_index))
                 .write(
                     UnlockRequest {
                         sp_strk_amount: 0_u256,
@@ -473,6 +502,9 @@ pub mod spSTRK {
                         expiry_time: 0_u64,
                     },
                 );
+
+            // Decrement count
+            self.unlock_request_count.entry(user).write(last_index);
 
             // Return spSTRK tokens to the user
             self.erc20._transfer(get_contract_address(), user, request.sp_strk_amount);
@@ -491,12 +523,14 @@ pub mod spSTRK {
         /// A tuple containing the UnlockRequest, the STRK amount, a boolean indicating if it's
         /// ready to claim, and a boolean indicating if it has expired
         fn get_unlock_request(
-            self: @ContractState, user: ContractAddress,
+            self: @ContractState, user: ContractAddress, request_index: u256,
         ) -> (UnlockRequest, u256, bool, bool) {
+            // Validate index
+            let request_count = self.unlock_request_count.entry(user).read();
+            assert(request_index < request_count, 'Invalid request index');
+
             // Retrieve the unlock request
-            let request = self.unlock_requests.entry(user).read();
-            // Ensure a valid unlock request exists
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
+            let request = self.unlock_requests.entry((user, request_index)).read();
 
             // Calculate STRK amount to be received
             let strk_amount = request.strk_amount;

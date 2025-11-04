@@ -24,12 +24,12 @@ pub trait IspSTRK<TContractState> {
     ///  Request to unlock spSTRK shares for STRK tokens
     fn request_unlock(ref self: TContractState, sp_strk_amount: u256, min_strk_out: u256) -> u256;
     ///  Claim unlocked STRK tokens after the unlock period
-    fn claim_unlock(ref self: TContractState);
+    fn claim_unlock(ref self: TContractState, request_index: u256);
     ///  Cancel an existing unlock request
-    fn cancel_unlock(ref self: TContractState);
+    fn cancel_unlock(ref self: TContractState, request_index: u256);
     ///  Get the unlock request details for a user
     fn get_unlock_request(
-        self: @TContractState, user: ContractAddress,
+        self: @TContractState, user: ContractAddress, request_index: u256,
     ) -> (UnlockRequest, u256, bool, bool);
     ///  Get the current exchange rate of STRK to spSTRK
     fn get_exchange_rate(self: @TContractState) -> u256;
@@ -90,4 +90,5 @@ pub mod Errors {
     pub const REQUEST_EXPIRED: felt252 = 'Unlock request expired';
     pub const REQUEST_NOT_EXIST: felt252 = 'Unlock request does not exist';
     pub const REQUEST_NOT_READY: felt252 = 'Unlock request not ready';
+    pub const TOO_MANY_REQUESTS: felt252 = 'Too many pending requests';
 }
