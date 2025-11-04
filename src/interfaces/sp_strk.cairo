@@ -27,6 +27,11 @@ pub trait IspSTRK<TContractState> {
     fn claim_unlock(ref self: TContractState, request_index: u256);
     ///  Cancel an existing unlock request
     fn cancel_unlock(ref self: TContractState, request_index: u256);
+
+    fn claim_expired(ref self: TContractState, request_index: u256);
+
+    fn get_unlock_request_count(self: @TContractState, user: ContractAddress) -> u256;
+
     ///  Get the unlock request details for a user
     fn get_unlock_request(
         self: @TContractState, user: ContractAddress, request_index: u256,
@@ -91,4 +96,5 @@ pub mod Errors {
     pub const REQUEST_NOT_EXIST: felt252 = 'Unlock request does not exist';
     pub const REQUEST_NOT_READY: felt252 = 'Unlock request not ready';
     pub const TOO_MANY_REQUESTS: felt252 = 'Too many pending requests';
+    pub const INVALID_REQUEST_INDEX: felt252 = 'Invalid request index';
 }

@@ -129,6 +129,14 @@ pub mod spSTRK {
     }
 
     #[derive(Drop, starknet::Event)]
+    struct UnlockExpired {
+        #[key]
+        user: ContractAddress,
+        index: u256,
+        sp_strk_amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
     struct Deposited {
         #[key]
         from: ContractAddress,
@@ -205,6 +213,7 @@ pub mod spSTRK {
         UnlockRequested: UnlockRequested,
         Unstaked: Unstaked,
         UnlockCancelled: UnlockCancelled,
+        UnlockExpired: UnlockExpired,
         Deposited: Deposited,
         Withdrawn: Withdrawn,
         RewardsAdded: RewardsAdded,
@@ -395,7 +404,7 @@ pub mod spSTRK {
             // Get caller address and their unlock request
             let user = get_caller_address();
             let request_count = self.unlock_request_count.entry(user).read();
-            assert(request_index < request_count, 'Invalid request index');
+            assert(request_index < request_count, Errors::INVALID_REQUEST_INDEX);
 
             let request = self.unlock_requests.entry((user, request_index)).read();
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
@@ -514,6 +523,75 @@ pub mod spSTRK {
 
             // End reentrancy guard
             self.reentrancy_guard.end();
+        }
+
+        /// Claim expired unlock request (returns spSTRK after claim window expires)
+        /// # Arguments
+        /// * `request_index` - Index of the expired unlock request
+        fn claim_expired(ref self: ContractState, request_index: u256) {
+            self.pausable.assert_not_paused();
+            self.reentrancy_guard.start();
+
+            // Get caller address and validate index
+            let user = get_caller_address();
+            let request_count = self.unlock_request_count.entry(user).read();
+            assert(request_index < request_count, 'Invalid request index');
+
+            // Get the unlock request
+            let request = self.unlock_requests.entry((user, request_index)).read();
+
+            // Validate it's expired
+            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
+            assert(get_block_timestamp() > request.expiry_time, 'Request not expired');
+
+            // Remove request by swapping with last element
+            let last_index = request_count - 1;
+            if request_index != last_index {
+                let last_request = self.unlock_requests.entry((user, last_index)).read();
+                self.unlock_requests.entry((user, request_index)).write(last_request);
+            }
+
+            // Clear the last request slot
+            self
+                .unlock_requests
+                .entry((user, last_index))
+                .write(
+                    UnlockRequest {
+                        sp_strk_amount: 0_u256,
+                        strk_amount: 0_u256,
+                        unlock_time: 0_u64,
+                        expiry_time: 0_u64,
+                    },
+                );
+
+            // Decrement count
+            self.unlock_request_count.entry(user).write(last_index);
+
+            // Reduce locked amount
+            self
+                .total_locked_in_unlocks
+                .write(self.total_locked_in_unlocks.read() - request.strk_amount);
+
+            // Return spSTRK to user
+            self.erc20._transfer(get_contract_address(), user, request.sp_strk_amount);
+
+            self
+                .emit(
+                    UnlockExpired {
+                        user, index: request_index, sp_strk_amount: request.sp_strk_amount,
+                    },
+                );
+
+            self.reentrancy_guard.end();
+        }
+
+        /// Get number of pending unlock requests for a user
+        /// # Arguments
+        /// * `user` - User address
+        /// # Returns
+        /// Number of pending requests
+        fn get_unlock_request_count(self: @ContractState, user: ContractAddress) -> u256 {
+            self.unlock_request_count.entry(user).read()
         }
 
         /// Get the unlock request details for a user
