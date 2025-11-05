@@ -814,7 +814,9 @@ pub mod spSTRK {
 
             // Update tracking
             let current_delegated = self.total_delegated_to_pool.read();
-            self.total_delegated_to_pool.write(current_delegated + amount);
+            let new_delegated = current_delegated + amount;
+            assert(new_delegated >= current_delegated, 'Delegation overflow');
+            self.total_delegated_to_pool.write(new_delegated);
 
             // Emit event
             self.emit(DelegatedToPool { amount });
@@ -852,7 +854,9 @@ pub mod spSTRK {
 
             // Add rewards to total pooled STRK (increases exchange rate!)
             let current_pooled = self.total_pooled_STRK.read();
-            self.total_pooled_STRK.write(current_pooled + rewards);
+            let new_pooled = current_pooled + rewards;
+            assert(new_pooled >= current_pooled, 'Rewards overflow');
+            self.total_pooled_STRK.write(new_pooled);
 
             // Emit event
             self.emit(DelegationRewardsClaimed { amount: rewards });
@@ -884,6 +888,10 @@ pub mod spSTRK {
             let pool_address = self.delegation_pool.read();
             assert(!pool_address.is_zero(), 'Delegation pool not set');
 
+            // Check we have enough delegated
+            let current_delegated = self.total_delegated_to_pool.read();
+            assert(amount <= current_delegated, 'Insufficient delegated amount');
+
             // Convert u256 to u128
             let amount_u128: u128 = amount.try_into().expect('Amount too large for u128');
 
@@ -895,7 +903,9 @@ pub mod spSTRK {
 
             // Track pending exit
             let current_pending = self.pending_delegation_exit.read();
-            self.pending_delegation_exit.write(current_pending + amount);
+            let new_pending = current_pending + amount;
+            assert(new_pending >= current_pending, 'Pending exit overflow');
+            self.pending_delegation_exit.write(new_pending);
 
             // Emit event (note: pool handles the unlock time internally)
             self.emit(DelegationExitIntent { amount });
@@ -933,10 +943,12 @@ pub mod spSTRK {
 
             // Update tracking - decrease delegated amount
             let current_delegated = self.total_delegated_to_pool.read();
+            assert(exited <= current_delegated, 'Exit exceeds delegated amount');
             self.total_delegated_to_pool.write(current_delegated - exited);
 
             // Update tracking - decrease pending exit
             let current_pending = self.pending_delegation_exit.read();
+            assert(exited <= current_pending, 'Exit exceeds pending amount');
             self.pending_delegation_exit.write(current_pending - exited);
 
             // Emit event
