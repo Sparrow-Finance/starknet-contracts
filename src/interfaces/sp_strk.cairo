@@ -66,6 +66,27 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
+
+    // ====================================
+    // Delegation functions (V2)
+    // ====================================
+
+    /// Set the validator delegation pool address
+    fn set_delegation_pool(ref self: TContractState, pool_address: ContractAddress);
+    /// Delegate STRK to validator pool
+    fn delegate_to_pool(ref self: TContractState, amount: u256);
+    /// Claim delegation rewards from pool
+    fn claim_delegation_rewards(ref self: TContractState) -> u256;
+    /// Signal intent to exit delegation pool (step 1 of 2)
+    fn exit_delegation_intent(ref self: TContractState, amount: u256);
+    /// Complete exit from delegation pool (step 2 of 2)
+    fn exit_delegation_action(ref self: TContractState) -> u256;
+    /// Get delegation pool address
+    fn get_delegation_pool(self: @TContractState) -> ContractAddress;
+    /// Get total STRK delegated to pool
+    fn get_total_delegated_to_pool(self: @TContractState) -> u256;
+    /// Get pending delegation exit amount
+    fn get_pending_delegation_exit(self: @TContractState) -> u256;
 }
 
 // Error messages used in the contract

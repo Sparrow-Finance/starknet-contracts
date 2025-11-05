@@ -4,6 +4,7 @@ pub mod components {
 
 pub mod interfaces {
     pub mod sp_strk;
+    pub mod staking;
 }
 
 pub mod mock {
