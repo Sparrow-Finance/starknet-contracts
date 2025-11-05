@@ -21,6 +21,7 @@ pub mod spSTRK {
     use sp_strk::interfaces::sp_strk::{IspSTRK, UnlockRequest, Errors};
     use sp_strk::interfaces::staking::{IDelegationPoolDispatcher, IDelegationPoolDispatcherTrait};
     use sp_strk::types::init::InitParams;
+    use sp_strk::types::validator::ValidatorInfo;
 
     // ====================================
     // OpenZeppelin components and their implementations
@@ -80,12 +81,12 @@ pub mod spSTRK {
         dao_fee_basis_points: u16,
         // Developer fee in basis points
         dev_fee_basis_points: u16,
-        // Validator delegation pool address
-        delegation_pool: ContractAddress,
-        // Total STRK delegated to pool
-        total_delegated_to_pool: u256,
-        // Pending exit amount from delegation pool
-        pending_delegation_exit: u256,
+        // Multi-validator delegation system
+        validators: Map<u32, ValidatorInfo>,
+        // Total number of validators added (never decreases)
+        validator_count: u32,
+        // Total STRK delegated across all validators
+        total_delegated_to_validators: u256,
 
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
@@ -197,28 +198,38 @@ pub mod spSTRK {
     }
 
     #[derive(Drop, starknet::Event)]
-    struct DelegationPoolSet {
-        old_address: ContractAddress,
-        new_address: ContractAddress,
+    struct ValidatorAdded {
+        validator_id: u32,
+        pool_address: ContractAddress,
     }
 
     #[derive(Drop, starknet::Event)]
-    struct DelegatedToPool {
+    struct ValidatorStatusChanged {
+        validator_id: u32,
+        is_active: bool,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct DelegatedToValidator {
+        validator_id: u32,
         amount: u256,
     }
 
     #[derive(Drop, starknet::Event)]
-    struct DelegationRewardsClaimed {
+    struct ValidatorRewardsClaimed {
+        validator_id: u32,
         amount: u256,
     }
 
     #[derive(Drop, starknet::Event)]
-    struct DelegationExitIntent {
+    struct ValidatorExitIntent {
+        validator_id: u32,
         amount: u256,
     }
 
     #[derive(Drop, starknet::Event)]
-    struct DelegationExitCompleted {
+    struct ValidatorExitCompleted {
+        validator_id: u32,
         amount: u256,
     }
 
@@ -238,11 +249,12 @@ pub mod spSTRK {
         MinStakeAmountUpdated: MinStakeAmountUpdated,
         UnlockPeriodUpdated: UnlockPeriodUpdated,
         ClaimWindowUpdated: ClaimWindowUpdated,
-        DelegationPoolSet: DelegationPoolSet,
-        DelegatedToPool: DelegatedToPool,
-        DelegationRewardsClaimed: DelegationRewardsClaimed,
-        DelegationExitIntent: DelegationExitIntent,
-        DelegationExitCompleted: DelegationExitCompleted,
+        ValidatorAdded: ValidatorAdded,
+        ValidatorStatusChanged: ValidatorStatusChanged,
+        DelegatedToValidator: DelegatedToValidator,
+        ValidatorRewardsClaimed: ValidatorRewardsClaimed,
+        ValidatorExitIntent: ValidatorExitIntent,
+        ValidatorExitCompleted: ValidatorExitCompleted,
 
         #[flat]
         ERC20Event: ERC20Component::Event,
@@ -745,40 +757,90 @@ pub mod spSTRK {
         }
 
         // ====================================
-        // Validator Delegation Functions (V2)
+        // Multi-Validator Delegation Functions (V2)
         // ====================================
 
-        /// Set the validator delegation pool address
+        /// Add a new validator pool (can never be deleted)
         /// # Arguments
         /// * `pool_address` - Address of the validator's delegation pool contract
+        /// # Returns
+        /// Validator ID (u32)
         /// # Access Control
-        /// Only owner can set delegation pool
-        /// # Example
-        /// set_delegation_pool(0x123...abc) - Sets pool to validator's pool contract
-        fn set_delegation_pool(ref self: ContractState, pool_address: ContractAddress) {
-            // Only owner can set delegation pool
+        /// Only owner can add validators
+        fn add_validator(ref self: ContractState, pool_address: ContractAddress) -> u32 {
+            // Only owner can add validators
             self.ownable.assert_only_owner();
 
-            // Get old address for event
-            let old_address = self.delegation_pool.read();
+            // Validate pool address
+            assert(!pool_address.is_zero(), 'Invalid pool address');
+
+            // Check for duplicate pool addresses
+            let count = self.validator_count.read();
+            let mut i: u32 = 0;
+            loop {
+                if i >= count {
+                    break;
+                }
+                let existing = self.validators.entry(i).read();
+                assert(existing.pool_address != pool_address, 'Pool already added');
+                i += 1;
+                // Safety: prevent infinite loop
+                assert(i <= count, 'Loop overflow');
+            };
+
+            // Get next validator ID
+            let validator_id = self.validator_count.read();
             
-            // Update delegation pool address
-            self.delegation_pool.write(pool_address);
+            // Create validator info (starts inactive)
+            let validator_info = ValidatorInfo {
+                pool_address,
+                is_active: false,
+                total_delegated: 0,
+                pending_exit: 0,
+            };
+
+            // Store validator
+            self.validators.entry(validator_id).write(validator_info);
+            
+            // Increment count
+            self.validator_count.write(validator_id + 1);
 
             // Emit event
-            self.emit(DelegationPoolSet { old_address, new_address: pool_address });
+            self.emit(ValidatorAdded { validator_id, pool_address });
+
+            validator_id
         }
 
-        /// Delegate STRK to validator pool
+        /// Set validator active/inactive status
         /// # Arguments
-        /// * `amount` - Amount of STRK to delegate (u256)
+        /// * `validator_id` - ID of the validator
+        /// * `is_active` - New active status
+        /// # Access Control
+        /// Only owner can change validator status
+        fn set_validator_status(ref self: ContractState, validator_id: u32, is_active: bool) {
+            // Only owner can change status
+            self.ownable.assert_only_owner();
+
+            // Check validator exists
+            let validator_count = self.validator_count.read();
+            assert(validator_id < validator_count, 'Validator does not exist');
+
+            // Get and update validator
+            let mut validator = self.validators.entry(validator_id).read();
+            validator.is_active = is_active;
+            self.validators.entry(validator_id).write(validator);
+
+            // Emit event
+            self.emit(ValidatorStatusChanged { validator_id, is_active });
+        }
+
+        /// Delegate STRK to specific validator
+        /// # Arguments
+        /// * `validator_id` - ID of the validator to delegate to
+        /// * `amount` - Amount of STRK to delegate
         /// # Access Control
         /// Only owner can delegate
-        /// # Requirements
-        /// - Delegation pool must be set first
-        /// - Contract must have enough STRK balance
-        /// - Amount must be greater than 0
-        fn delegate_to_pool(ref self: ContractState, amount: u256) {
+        fn delegate_to_validator(ref self: ContractState, validator_id: u32, amount: u256) {
             // Only owner can delegate
             self.ownable.assert_only_owner();
             
@@ -787,70 +849,88 @@ pub mod spSTRK {
 
             // Validate amount
             assert(amount > 0, Errors::INVALID_AMOUNT);
-            
-            // Check delegation pool is set
-            let pool_address = self.delegation_pool.read();
-            assert(!pool_address.is_zero(), 'Delegation pool not set');
-            
-            // Check contract has enough STRK
-            let contract_balance = self._strk_balance_of(get_contract_address());
-            assert(contract_balance >= amount, Errors::INSUFFICIENT_STARK);
 
-            // Convert u256 to u128 for pool interface
+            // Check validator exists
+            let validator_count = self.validator_count.read();
+            assert(validator_id < validator_count, 'Validator does not exist');
+
+            // Get validator and check if active
+            let mut validator = self.validators.entry(validator_id).read();
+            assert(validator.is_active, 'Validator is not active');
+
+            // Check contract has enough available STRK
+            let contract_balance = self._strk_balance_of(get_contract_address());
+            let total_delegated = self.total_delegated_to_validators.read();
+            
+            // CRITICAL: Check for underflow before subtraction
+            assert(contract_balance >= total_delegated, 'Balance corrupted');
+            let available = contract_balance - total_delegated;
+            assert(amount <= available, 'Insufficient available STRK');
+
+            // Convert u256 to u128
             let amount_u128: u128 = amount.try_into().expect('Amount too large for u128');
 
             // Get delegation pool dispatcher
-            let pool = IDelegationPoolDispatcher { contract_address: pool_address };
+            let pool = IDelegationPoolDispatcher { contract_address: validator.pool_address };
 
             // Approve STRK to delegation pool
             let strk_token = self._strk_dispatcher();
-            strk_token.approve(pool_address, amount);
+            strk_token.approve(validator.pool_address, amount);
 
-            // Delegate to pool (spSTRK contract receives rewards)
+            // Delegate to pool
             pool.enter_delegation_pool(
                 reward_address: get_contract_address(),
                 amount: amount_u128
             );
 
-            // Update tracking
-            let current_delegated = self.total_delegated_to_pool.read();
-            let new_delegated = current_delegated + amount;
-            assert(new_delegated >= current_delegated, 'Delegation overflow');
-            self.total_delegated_to_pool.write(new_delegated);
+            // Update validator tracking
+            let new_validator_delegated = validator.total_delegated + amount;
+            assert(new_validator_delegated >= validator.total_delegated, 'Validator overflow');
+            validator.total_delegated = new_validator_delegated;
+            self.validators.entry(validator_id).write(validator);
+
+            // Update total tracking
+            let new_total = total_delegated + amount;
+            assert(new_total >= total_delegated, 'Total overflow');
+            self.total_delegated_to_validators.write(new_total);
 
             // Emit event
-            self.emit(DelegatedToPool { amount });
+            self.emit(DelegatedToValidator { validator_id, amount });
 
             // End reentrancy protection
             self.reentrancy_guard.end();
         }
 
-        /// Claim delegation rewards from pool
+        /// Claim rewards from specific validator
+        /// # Arguments
+        /// * `validator_id` - ID of the validator to claim from
         /// # Returns
-        /// Amount of rewards claimed (u256)
+        /// Amount of rewards claimed
         /// # Access Control
-        /// Only owner can claim delegation rewards
-        /// # Requirements
-        /// - Delegation pool must be set
-        /// # Effect
-        /// - Rewards are added to total_pooled_STRK (increases exchange rate!)
-        fn claim_delegation_rewards(ref self: ContractState) -> u256 {
+        /// Only owner can claim
+        fn claim_validator_rewards(ref self: ContractState, validator_id: u32) -> u256 {
             // Only owner can claim
             self.ownable.assert_only_owner();
             
             // Reentrancy protection
             self.reentrancy_guard.start();
 
-            // Check delegation pool is set
-            let pool_address = self.delegation_pool.read();
-            assert(!pool_address.is_zero(), 'Delegation pool not set');
+            // Check validator exists
+            let validator_count = self.validator_count.read();
+            assert(validator_id < validator_count, 'Validator does not exist');
+
+            // Get validator
+            let validator = self.validators.entry(validator_id).read();
 
             // Get delegation pool dispatcher
-            let pool = IDelegationPoolDispatcher { contract_address: pool_address };
+            let pool = IDelegationPoolDispatcher { contract_address: validator.pool_address };
 
-            // Claim rewards (spSTRK contract is the pool member)
+            // Claim rewards
             let rewards_u128 = pool.claim_rewards(get_contract_address());
             let rewards: u256 = rewards_u128.into();
+
+            // Check if any rewards
+            assert(rewards > 0, 'No rewards to claim');
 
             // Add rewards to total pooled STRK (increases exchange rate!)
             let current_pooled = self.total_pooled_STRK.read();
@@ -859,7 +939,7 @@ pub mod spSTRK {
             self.total_pooled_STRK.write(new_pooled);
 
             // Emit event
-            self.emit(DelegationRewardsClaimed { amount: rewards });
+            self.emit(ValidatorRewardsClaimed { validator_id, amount: rewards });
 
             // End reentrancy protection
             self.reentrancy_guard.end();
@@ -867,92 +947,94 @@ pub mod spSTRK {
             rewards
         }
 
-        /// Signal intent to exit delegation pool (step 1 of 2)
+        /// Signal intent to exit from validator (step 1 of 2)
         /// # Arguments
-        /// * `amount` - Amount to exit from pool (u256)
+        /// * `validator_id` - ID of the validator to exit from
+        /// * `amount` - Amount to exit
         /// # Access Control
-        /// Only owner can exit delegation
-        /// # Requirements
-        /// - Delegation pool must be set
-        /// - Amount must be greater than 0
-        /// # Note
-        /// After calling this, must wait for unlock period before calling exit_delegation_action
-        fn exit_delegation_intent(ref self: ContractState, amount: u256) {
+        /// Only owner can exit
+        fn exit_validator_intent(ref self: ContractState, validator_id: u32, amount: u256) {
             // Only owner can exit
             self.ownable.assert_only_owner();
 
             // Validate amount
             assert(amount > 0, Errors::INVALID_AMOUNT);
 
-            // Check delegation pool is set
-            let pool_address = self.delegation_pool.read();
-            assert(!pool_address.is_zero(), 'Delegation pool not set');
+            // Check validator exists
+            let validator_count = self.validator_count.read();
+            assert(validator_id < validator_count, 'Validator does not exist');
 
-            // Check we have enough delegated
-            let current_delegated = self.total_delegated_to_pool.read();
-            assert(amount <= current_delegated, 'Insufficient delegated amount');
+            // Get validator
+            let mut validator = self.validators.entry(validator_id).read();
+
+            // Check available amount (delegated - pending_exit)
+            assert(validator.pending_exit <= validator.total_delegated, 'State corrupted');
+            let available_to_exit = validator.total_delegated - validator.pending_exit;
+            assert(amount <= available_to_exit, 'Insufficient validator amount');
 
             // Convert u256 to u128
             let amount_u128: u128 = amount.try_into().expect('Amount too large for u128');
 
             // Get delegation pool dispatcher
-            let pool = IDelegationPoolDispatcher { contract_address: pool_address };
+            let pool = IDelegationPoolDispatcher { contract_address: validator.pool_address };
 
             // Signal exit intent to pool
             pool.exit_delegation_pool_intent(amount_u128);
 
-            // Track pending exit
-            let current_pending = self.pending_delegation_exit.read();
-            let new_pending = current_pending + amount;
-            assert(new_pending >= current_pending, 'Pending exit overflow');
-            self.pending_delegation_exit.write(new_pending);
+            // Update validator pending exit
+            let new_pending = validator.pending_exit + amount;
+            assert(new_pending >= validator.pending_exit, 'Pending overflow');
+            validator.pending_exit = new_pending;
+            self.validators.entry(validator_id).write(validator);
 
-            // Emit event (note: pool handles the unlock time internally)
-            self.emit(DelegationExitIntent { amount });
+            // Emit event
+            self.emit(ValidatorExitIntent { validator_id, amount });
         }
 
-        /// Complete exit from delegation pool (step 2 of 2)
+        /// Complete exit from validator (step 2 of 2)
+        /// # Arguments
+        /// * `validator_id` - ID of the validator to complete exit from
         /// # Returns
-        /// Amount of STRK returned (u256)
+        /// Amount of STRK returned
         /// # Access Control
         /// Only owner can complete exit
-        /// # Requirements
-        /// - Delegation pool must be set
-        /// - Must have called exit_delegation_intent first
-        /// - Unlock period must have passed
-        /// # Effect
-        /// - STRK is returned to spSTRK contract
-        /// - Tracking variables are updated
-        fn exit_delegation_action(ref self: ContractState) -> u256 {
+        fn exit_validator_action(ref self: ContractState, validator_id: u32) -> u256 {
             // Only owner can complete exit
             self.ownable.assert_only_owner();
             
             // Reentrancy protection
             self.reentrancy_guard.start();
 
-            // Check delegation pool is set
-            let pool_address = self.delegation_pool.read();
-            assert(!pool_address.is_zero(), 'Delegation pool not set');
+            // Check validator exists
+            let validator_count = self.validator_count.read();
+            assert(validator_id < validator_count, 'Validator does not exist');
+
+            // Get validator
+            let mut validator = self.validators.entry(validator_id).read();
 
             // Get delegation pool dispatcher
-            let pool = IDelegationPoolDispatcher { contract_address: pool_address };
+            let pool = IDelegationPoolDispatcher { contract_address: validator.pool_address };
 
-            // Complete exit (spSTRK contract is the pool member)
+            // Complete exit
             let exited_u128 = pool.exit_delegation_pool_action(get_contract_address());
             let exited: u256 = exited_u128.into();
 
-            // Update tracking - decrease delegated amount
-            let current_delegated = self.total_delegated_to_pool.read();
-            assert(exited <= current_delegated, 'Exit exceeds delegated amount');
-            self.total_delegated_to_pool.write(current_delegated - exited);
+            // Update validator tracking
+            assert(exited <= validator.total_delegated, 'Exit exceeds delegated');
+            validator.total_delegated = validator.total_delegated - exited;
+            
+            assert(exited <= validator.pending_exit, 'Exit exceeds pending');
+            validator.pending_exit = validator.pending_exit - exited;
+            
+            self.validators.entry(validator_id).write(validator);
 
-            // Update tracking - decrease pending exit
-            let current_pending = self.pending_delegation_exit.read();
-            assert(exited <= current_pending, 'Exit exceeds pending amount');
-            self.pending_delegation_exit.write(current_pending - exited);
+            // Update total tracking
+            let total_delegated = self.total_delegated_to_validators.read();
+            assert(exited <= total_delegated, 'Exit exceeds total');
+            self.total_delegated_to_validators.write(total_delegated - exited);
 
             // Emit event
-            self.emit(DelegationExitCompleted { amount: exited });
+            self.emit(ValidatorExitCompleted { validator_id, amount: exited });
 
             // End reentrancy protection
             self.reentrancy_guard.end();
@@ -961,29 +1043,34 @@ pub mod spSTRK {
         }
 
         // ====================================
-        // Delegation View Functions
+        // Multi-Validator View Functions
         // ====================================
 
-        /// Get delegation pool address
+        /// Get validator information
+        /// # Arguments
+        /// * `validator_id` - ID of the validator
         /// # Returns
-        /// Address of validator delegation pool
-        fn get_delegation_pool(self: @ContractState) -> ContractAddress {
-            self.delegation_pool.read()
+        /// ValidatorInfo struct
+        fn get_validator_info(self: @ContractState, validator_id: u32) -> ValidatorInfo {
+            let validator_count = self.validator_count.read();
+            assert(validator_id < validator_count, 'Validator does not exist');
+            self.validators.entry(validator_id).read()
         }
 
-        /// Get total STRK delegated to pool
+        /// Get total number of validators
         /// # Returns
-        /// Total amount delegated
-        fn get_total_delegated_to_pool(self: @ContractState) -> u256 {
-            self.total_delegated_to_pool.read()
+        /// Total validator count
+        fn get_validator_count(self: @ContractState) -> u32 {
+            self.validator_count.read()
         }
 
-        /// Get pending delegation exit amount
+        /// Get total STRK delegated across all validators
         /// # Returns
-        /// Amount pending exit
-        fn get_pending_delegation_exit(self: @ContractState) -> u256 {
-            self.pending_delegation_exit.read()
+        /// Total delegated amount
+        fn get_total_delegated_to_validators(self: @ContractState) -> u256 {
+            self.total_delegated_to_validators.read()
         }
+        
     }
 
     // ====================================

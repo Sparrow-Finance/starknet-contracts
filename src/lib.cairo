@@ -14,6 +14,7 @@ pub mod mock {
 
 pub mod types {
     pub mod init;
+    pub mod validator;
 }
 
 pub mod sp_strk;

@@ -1,4 +1,5 @@
 use starknet::ContractAddress;
+use sp_strk::types::validator::ValidatorInfo;
 
 // Structure to hold unlock request details
 #[derive(Copy, Drop, Serde, PartialEq, Debug, starknet::Store)]
@@ -68,25 +69,27 @@ pub trait IspSTRK<TContractState> {
     fn unpause(ref self: TContractState);
 
     // ====================================
-    // Delegation functions (V2)
+    // Multi-Validator Delegation Functions (V2)
     // ====================================
 
-    /// Set the validator delegation pool address
-    fn set_delegation_pool(ref self: TContractState, pool_address: ContractAddress);
-    /// Delegate STRK to validator pool
-    fn delegate_to_pool(ref self: TContractState, amount: u256);
-    /// Claim delegation rewards from pool
-    fn claim_delegation_rewards(ref self: TContractState) -> u256;
-    /// Signal intent to exit delegation pool (step 1 of 2)
-    fn exit_delegation_intent(ref self: TContractState, amount: u256);
-    /// Complete exit from delegation pool (step 2 of 2)
-    fn exit_delegation_action(ref self: TContractState) -> u256;
-    /// Get delegation pool address
-    fn get_delegation_pool(self: @TContractState) -> ContractAddress;
-    /// Get total STRK delegated to pool
-    fn get_total_delegated_to_pool(self: @TContractState) -> u256;
-    /// Get pending delegation exit amount
-    fn get_pending_delegation_exit(self: @TContractState) -> u256;
+    /// Add a new validator pool
+    fn add_validator(ref self: TContractState, pool_address: ContractAddress) -> u32;
+    /// Set validator active/inactive status
+    fn set_validator_status(ref self: TContractState, validator_id: u32, is_active: bool);
+    /// Delegate STRK to specific validator
+    fn delegate_to_validator(ref self: TContractState, validator_id: u32, amount: u256);
+    /// Claim rewards from specific validator
+    fn claim_validator_rewards(ref self: TContractState, validator_id: u32) -> u256;
+    /// Signal intent to exit from validator (step 1 of 2)
+    fn exit_validator_intent(ref self: TContractState, validator_id: u32, amount: u256);
+    /// Complete exit from validator (step 2 of 2)
+    fn exit_validator_action(ref self: TContractState, validator_id: u32) -> u256;
+    /// Get validator information
+    fn get_validator_info(self: @TContractState, validator_id: u32) -> ValidatorInfo;
+    /// Get total number of validators
+    fn get_validator_count(self: @TContractState) -> u32;
+    /// Get total STRK delegated across all validators
+    fn get_total_delegated_to_validators(self: @TContractState) -> u256;
 }
 
 // Error messages used in the contract
