@@ -597,73 +597,6 @@ pub mod spSTRK {
         /// Admin Functions
         /// ====================================
 
-        /// Deposit STRK tokens into the contract
-        /// # Arguments
-        /// * `strk_amount` - The amount of STRK tokens to deposit
-        fn deposit(ref self: ContractState, strk_amount: u256) {
-            // Only owner can deposit
-            self.ownable.assert_only_owner();
-
-            assert(strk_amount > 0, Errors::INVALID_AMOUNT);
-
-            // Transfer STRK tokens from owner to contract
-            self._strk_transfer(get_caller_address(), get_contract_address(), strk_amount);
-            self.emit(Deposited { from: get_caller_address(), amount: strk_amount });
-        }
-
-        /// Withdraw STRK tokens from the contract
-        /// # Arguments
-        /// * `strk_amount` - The amount of STRK tokens to withdraw
-        fn withdraw(ref self: ContractState, strk_amount: u256) {
-            self.ownable.assert_only_owner();
-            self.reentrancy_guard.start();
-
-            // Validate withdraw amount
-            assert(strk_amount > 0, Errors::INVALID_AMOUNT);
-            // Ensure contract has enough STRK balance
-            assert(
-                self._strk_balance_of(get_contract_address()) >= strk_amount,
-                Errors::INSUFFICIENT_STARK,
-            );
-
-            // Transfer STRK tokens to owner
-            self._strk_transfer(get_contract_address(), get_caller_address(), strk_amount);
-
-            self.emit(Withdrawn { to: get_caller_address(), amount: strk_amount });
-
-            self.reentrancy_guard.end();
-        }
-
-        /// Deposit STRK tokens into the contract as rewards
-        /// # Arguments
-        /// * `strk_amount` - The amount of STRK tokens to deposit
-        fn add_rewards(ref self: ContractState, strk_amount: u256) {
-            self.ownable.assert_only_owner();
-
-            assert(strk_amount > 0, Errors::INVALID_AMOUNT);
-
-            // Transfer STRK tokens from owner to contract
-            self._strk_transfer(get_caller_address(), get_contract_address(), strk_amount);
-
-            // Calculate fees and user rewards
-            let dao_fees = (strk_amount * self.dao_fee_basis_points.read().into())
-                / Constants::BASIS_POINTS;
-            let dev_fees = (strk_amount * self.dev_fee_basis_points.read().into())
-                / Constants::BASIS_POINTS;
-            // Calculate total fees and user rewards
-            let total_fees = dao_fees + dev_fees;
-            let user_rewards = strk_amount - total_fees;
-
-            // Update total pooled STRK and accumulated fees
-            self.total_pooled_STRK.write(self.total_pooled_STRK.read() + user_rewards);
-            self.accumulated_dao_fees.write(self.accumulated_dao_fees.read() + dao_fees);
-            self.accumulated_dev_fees.write(self.accumulated_dev_fees.read() + dev_fees);
-
-            self
-                .emit(
-                    RewardsAdded { total_rewards: strk_amount, user_rewards, dao_fees, dev_fees },
-                );
-        }
 
         /// Collect accumulated DAO fees
         fn collect_dao_fees(ref self: ContractState) {
@@ -963,6 +896,9 @@ pub mod spSTRK {
         fn exit_validator_intent(ref self: ContractState, validator_id: u32, amount: u256) {
             // Only owner can exit
             self.ownable.assert_only_owner();
+            
+            // Reentrancy protection
+            self.reentrancy_guard.start();
 
             // Validate amount
             assert(amount > 0, Errors::INVALID_AMOUNT);
@@ -996,6 +932,9 @@ pub mod spSTRK {
 
             // Emit event
             self.emit(ValidatorExitIntent { validator_id, amount });
+            
+            // End reentrancy protection
+            self.reentrancy_guard.end();
         }
 
         /// Complete exit from validator (step 2 of 2)
@@ -1205,6 +1144,169 @@ pub mod spSTRK {
                 // Calculate STRK amount based on exchange rate
                 (sp_strk_amount * self.total_pooled_STRK.read()) / self.erc20.total_supply()
             }
+        }
+
+        /// Stake STRK and mint spSTRK to a specific receiver (for ERC4626)
+        /// # Arguments
+        /// * `strk_amount` - Amount of STRK to stake
+        /// * `receiver` - Address to receive spSTRK
+        /// # Returns
+        /// Amount of spSTRK minted
+        fn stake_with_receiver(ref self: ContractState, strk_amount: u256, receiver: ContractAddress) -> u256 {
+            // Ensure contract is not paused
+            self.pausable.assert_not_paused();
+            
+            // Validate stake amount
+            assert(strk_amount >= self.min_stake_amount.read(), Errors::BELOW_MINIMUM_STAKE);
+            assert(!receiver.is_zero(), Errors::INVALID_AMOUNT);
+
+            // Calculate spSTRK amount to mint
+            let sp_strk_amount = self._strk_to_sp_strk(strk_amount);
+
+            // Enforce minimum first deposit
+            if self.erc20.total_supply() == 0 {
+                assert(strk_amount >= 1000000, Errors::LOW_FIRST_DEPOSIT);
+            } else {
+                assert(sp_strk_amount > 0, Errors::INSUFFICIENT_SHARES);
+            }
+
+            // Get caller address
+            let caller = get_caller_address();
+
+            // Transfer STRK tokens from caller to contract
+            self._strk_transfer(caller, get_contract_address(), strk_amount);
+            
+            // Mint spSTRK tokens to receiver
+            self.erc20.mint(receiver, sp_strk_amount);
+
+            // Update total pooled STRK
+            self.total_pooled_STRK.write(self.total_pooled_STRK.read() + strk_amount);
+
+            // Emit Staked event
+            self.emit(Staked { user: receiver, strk_amount, sp_strk_amount });
+
+            sp_strk_amount
+        }
+    }
+
+    // ====================================
+    // ERC4626 Implementation
+    // ====================================
+    #[abi(embed_v0)]
+    impl ERC4626Impl of sp_strk::interfaces::erc4626::IERC4626<ContractState> {
+        /// Returns the address of the underlying STRK token
+        fn asset(self: @ContractState) -> ContractAddress {
+            self.strk_token.read()
+        }
+
+        /// Returns total assets under management (total pooled STRK)
+        fn total_assets(self: @ContractState) -> u256 {
+            self.total_pooled_STRK.read()
+        }
+
+        /// Convert STRK assets to spSTRK shares
+        fn convert_to_shares(self: @ContractState, assets: u256) -> u256 {
+            self._strk_to_sp_strk(assets)
+        }
+
+        /// Convert spSTRK shares to STRK assets
+        fn convert_to_assets(self: @ContractState, shares: u256) -> u256 {
+            self._sp_strk_to_strk(shares)
+        }
+
+        /// Maximum deposit allowed (unlimited if not paused)
+        fn max_deposit(self: @ContractState, receiver: ContractAddress) -> u256 {
+            if self.pausable.is_paused() {
+                0_u256
+            } else {
+                // Return max u256
+                0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff_u256
+            }
+        }
+
+        /// Preview shares to be minted for assets
+        fn preview_deposit(self: @ContractState, assets: u256) -> u256 {
+            self._strk_to_sp_strk(assets)
+        }
+
+        /// Deposit STRK and receive spSTRK (ERC4626 standard)
+        /// Maps to stake() function
+        fn deposit(ref self: ContractState, assets: u256, receiver: ContractAddress) -> u256 {
+            // Call the existing stake function with receiver
+            self.stake_with_receiver(assets, receiver)
+        }
+
+        /// Maximum mint allowed
+        fn max_mint(self: @ContractState, receiver: ContractAddress) -> u256 {
+            if self.pausable.is_paused() {
+                0_u256
+            } else {
+                // Return max u256
+                0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff_u256
+            }
+        }
+
+        /// Preview assets needed to mint shares
+        fn preview_mint(self: @ContractState, shares: u256) -> u256 {
+            self._sp_strk_to_strk(shares)
+        }
+
+        /// Mint exact shares by depositing assets
+        fn mint(ref self: ContractState, shares: u256, receiver: ContractAddress) -> u256 {
+            // Calculate assets needed
+            let assets = self._sp_strk_to_strk(shares);
+            
+            // Call stake with receiver
+            self.stake_with_receiver(assets, receiver);
+            
+            assets
+        }
+
+        /// Maximum withdraw (0 - must use unlock flow)
+        fn max_withdraw(self: @ContractState, owner: ContractAddress) -> u256 {
+            // Instant withdrawal not supported - must use unlock flow
+            0_u256
+        }
+
+        /// Preview shares to burn for assets
+        fn preview_withdraw(self: @ContractState, assets: u256) -> u256 {
+            self._strk_to_sp_strk(assets)
+        }
+
+        /// Withdraw not supported - use request_unlock/claim_unlock instead
+        fn withdraw(
+            ref self: ContractState, 
+            assets: u256, 
+            receiver: ContractAddress, 
+            owner: ContractAddress
+        ) -> u256 {
+            // ERC4626 withdraw not supported
+            // Users must use request_unlock() and claim_unlock()
+            assert(false, 'Use request_unlock flow');
+            0_u256
+        }
+
+        /// Maximum redeem (user's balance)
+        fn max_redeem(self: @ContractState, owner: ContractAddress) -> u256 {
+            self.erc20.balance_of(owner)
+        }
+
+        /// Preview assets to receive for shares
+        fn preview_redeem(self: @ContractState, shares: u256) -> u256 {
+            self._sp_strk_to_strk(shares)
+        }
+
+        /// Redeem not supported - use request_unlock/claim_unlock instead
+        fn redeem(
+            ref self: ContractState, 
+            shares: u256, 
+            receiver: ContractAddress, 
+            owner: ContractAddress
+        ) -> u256 {
+            // ERC4626 redeem not supported
+            // Users must use request_unlock() and claim_unlock()
+            assert(false, 'Use request_unlock flow');
+            0_u256
         }
     }
 }

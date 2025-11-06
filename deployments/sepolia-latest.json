@@ -1,7 +1,7 @@
 {
   "network": "sepolia",
-  "contractAddress": "0x5b99769253e7b81178c90c62bcda0df4f24aad2a1f7fab6398c2c03d0aa5933",
-  "classHash": "0x7f27b5793f256787928ecb5d1e2b3e1f3578605e35add20f432f703b049df74",
+  "contractAddress": "0x4ed4f0f1fa6983630b203db432e1dfb063add6941ca729edd40863623226108",
+  "classHash": "0x3918e55999c979fdd711bf4cc6c754d708b6f83109b0eef2a45a94282f3b44b",
   "owner": "0x073eb5658ce8291f795aad5584000dfc52aa197600b4df98568b4d480b9fdb65",
   "strkToken": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
   "daoFeeBps": "500",
@@ -9,6 +9,6 @@
   "minStakeAmount": "100000000000000000",
   "unlockPeriod": "691200",
   "claimWindow": "86400",
-  "deployedAt": "2025-11-05T23:13:31.768Z",
-  "transactionHash": "0x2ee4b6b832cc5e73f31dd1e2212ff43fbb0a9095ebf2727015d01d697f172dc"
+  "deployedAt": "2025-11-06T02:03:07.553Z",
+  "transactionHash": "0x38babbaa3fdc9e57c37b2174432e61f848664ea855175ee5246ae3af27a3747"
 }

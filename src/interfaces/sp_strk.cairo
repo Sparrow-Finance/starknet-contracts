@@ -45,12 +45,6 @@ pub trait IspSTRK<TContractState> {
     // Admin functions
     // ====================================
 
-    /// Deposit STRK tokens
-    fn deposit(ref self: TContractState, strk_amount: u256);
-    /// Withdraw STRK tokens
-    fn withdraw(ref self: TContractState, strk_amount: u256);
-    /// Add rewards to the staking pool
-    fn add_rewards(ref self: TContractState, strk_amount: u256);
     /// Collect accumulated DAO fees
     fn collect_dao_fees(ref self: TContractState);
     /// Collect accumulated developer fees

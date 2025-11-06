@@ -42,19 +42,31 @@ async function main() {
     const casmContract = json.parse(fs.readFileSync(casmPath).toString("ascii"));
     console.log("✅ New contract version loaded\n");
 
-    // Declare new contract class
+    // Declare new contract class (skip if already declared)
     console.log("📝 Declaring new contract class...");
-    const declareResponse = await account.declare({
-        contract: sierraContract,
-        casm: casmContract,
-    });
-
-    console.log(`   Transaction Hash: ${declareResponse.transaction_hash}`);
-    console.log("   Waiting for declaration confirmation...");
+    let newClassHash;
     
-    await provider.waitForTransaction(declareResponse.transaction_hash);
-    const newClassHash = declareResponse.class_hash;
-    console.log(`✅ New class declared! Class Hash: ${newClassHash}\n`);
+    try {
+        const declareResponse = await account.declare({
+            contract: sierraContract,
+            casm: casmContract,
+        });
+
+        console.log(`   Transaction Hash: ${declareResponse.transaction_hash}`);
+        console.log("   Waiting for declaration confirmation...");
+        
+        await provider.waitForTransaction(declareResponse.transaction_hash);
+        newClassHash = declareResponse.class_hash;
+        console.log(`✅ New class declared! Class Hash: ${newClassHash}\n`);
+    } catch (error) {
+        if (error.message.includes('already declared')) {
+            // Class already declared, use the existing class hash
+            newClassHash = '0x3918e55999c979fdd711bf4cc6c754d708b6f83109b0eef2a45a94282f3b44b';
+            console.log(`ℹ️  Class already declared, using existing class hash: ${newClassHash}\n`);
+        } else {
+            throw error;
+        }
+    }
 
     // Upgrade contract
     console.log("🚀 Upgrading contract...");
@@ -93,7 +105,6 @@ async function main() {
         newClassHash: newClassHash,
         upgradedAt: new Date().toISOString(),
         upgradeTransactionHash: upgradeResponse.transaction_hash,
-        declareTransactionHash: declareResponse.transaction_hash,
     };
 
     const upgradePath = path.join(__dirname, "../deployments/sepolia-upgrade-latest.json");
