@@ -879,7 +879,10 @@ pub mod spSTRK {
 
             // Delegate to pool - use add_to_delegation_pool if already a member
             if validator.total_delegated > 0 {
-                pool.add_to_delegation_pool(amount: amount_u128);
+                pool.add_to_delegation_pool(
+                    pool_member: get_contract_address(),
+                    amount: amount_u128
+                );
             } else {
                 pool.enter_delegation_pool(
                     reward_address: get_contract_address(),
