@@ -1,0 +1,9 @@
+{
+  "network": "sepolia",
+  "contractAddress": "0x05b99769253e7b81178c90c62bcda0df4f24aad2a1f7fab6398c2c03d0aa5933",
+  "oldClassHash": "0x7f27b5793f256787928ecb5d1e2b3e1f3578605e35add20f432f703b049df74",
+  "newClassHash": "0x71c9310b8bcc806057995aecee4bb1e3a966e64b5fcde7baf92e3fc18f93c69",
+  "upgradedAt": "2025-11-06T00:01:30.678Z",
+  "upgradeTransactionHash": "0x54bb63ad365be3e8322999a601e455063915d0b81110b8cc676b8e006151a3a",
+  "declareTransactionHash": "0x5190aca9fb6b9de1bd67c8e235c5d9366e77bee6bd4124d83ac55d50eaac22f"
+}

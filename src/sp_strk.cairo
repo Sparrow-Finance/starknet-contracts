@@ -877,11 +877,15 @@ pub mod spSTRK {
             let strk_token = self._strk_dispatcher();
             strk_token.approve(validator.pool_address, amount);
 
-            // Delegate to pool
-            pool.enter_delegation_pool(
-                reward_address: get_contract_address(),
-                amount: amount_u128
-            );
+            // Delegate to pool - use add_to_delegation_pool if already a member
+            if validator.total_delegated > 0 {
+                pool.add_to_delegation_pool(amount: amount_u128);
+            } else {
+                pool.enter_delegation_pool(
+                    reward_address: get_contract_address(),
+                    amount: amount_u128
+                );
+            }
 
             // Update validator tracking
             let new_validator_delegated = validator.total_delegated + amount;

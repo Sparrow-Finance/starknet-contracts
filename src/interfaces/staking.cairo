@@ -14,6 +14,11 @@ pub trait IDelegationPool<TContractState> {
         amount: u128
     );
 
+    /// Add more STRK to existing delegation pool membership
+    /// # Arguments
+    /// * `amount` - Amount to add (u128)
+    fn add_to_delegation_pool(ref self: TContractState, amount: u128);
+
     /// Signal intent to exit delegation pool (step 1 of 2)
     /// # Arguments
     /// * `amount` - Amount to exit (u128)
