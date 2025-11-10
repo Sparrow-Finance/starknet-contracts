@@ -73,6 +73,12 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
+
+    fn claim_validator_rewards(ref self: TContractState) -> u256;
+
+    fn get_delegation_stats(self: @TContractState) -> (u256, ContractAddress, bool);
+
+    fn set_validator_pool(ref self: TContractState, new_pool: ContractAddress);
 }
 
 // Error messages used in the contract
