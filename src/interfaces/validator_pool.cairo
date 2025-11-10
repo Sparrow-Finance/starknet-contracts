@@ -18,21 +18,21 @@ pub trait IValidatorPool<TContractState> {
         amount: u128
     ) -> u128;
     
-    /// Request to exit pool (starts 21-day unbonding on mainnet)
+    /// Request to exit pool (starts 21-day unbonding on mainnet).  -------> Request unlock
     /// Use this when reserve is depleted and need to unstake from validator
     fn exit_delegation_pool_intent(
         ref self: TContractState,
         amount: u128
     );
     
-    /// Complete exit after unbonding period
+    /// Complete exit after unbonding period                        ---------> claim unlock
     /// Call this after waiting for the unbonding period to get STRK back
     fn exit_delegation_pool_action(
         ref self: TContractState,
         pool_member: ContractAddress
     ) -> u128;
     
-    /// Claim accumulated rewards from the pool
+    /// Claim accumulated rewards from the pool                     ---------> add rewards
     /// Can be called as often as needed (daily, weekly, etc.)
     fn claim_rewards(
         ref self: TContractState,
