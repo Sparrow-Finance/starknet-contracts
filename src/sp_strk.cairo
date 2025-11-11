@@ -1069,5 +1069,111 @@ pub mod spSTRK {
                 (sp_strk_amount * self.total_pooled_STRK.read()) / self.erc20.total_supply()
             }
         }
+
+        /// Calculate current liquid balance and available amount to delegate
+        /// Returns: (current_liquid, target_reserve, available_to_delegate)
+        fn _calculate_liquidity(self: @ContractState) -> (u256, u256, u256) {
+            let total_pooled = self.total_pooled_STRK.read();
+            let target_reserve = (total_pooled * self.target_reserve_ratio.read().into())
+                / Constants::BASIS_POINTS;
+
+            let contract_balance = self._strk_balance_of(get_contract_address());
+            let committed_fees = self.accumulated_dao_fees.read()
+                + self.accumulated_dev_fees.read();
+
+            let current_liquid = if contract_balance > committed_fees {
+                contract_balance - committed_fees
+            } else {
+                0
+            };
+
+            let available_to_delegate = if current_liquid > target_reserve {
+                current_liquid - target_reserve
+            } else {
+                0
+            };
+
+            (current_liquid, target_reserve, available_to_delegate)
+        }
+
+        /// Delegate STRK to validator pool
+        fn _delegate_to_validator(ref self: ContractState, amount: u256) {
+            let validator = self.validator_pool.read();
+            let zero_address: ContractAddress = 0.try_into().unwrap();
+            if validator == zero_address {
+                return; // No validator set, skip
+            }
+
+            if amount == 0 {
+                return; // Nothing to delegate
+            }
+
+            let pool = self._validator_pool_dispatcher();
+            let reward_address = get_contract_address();
+
+            // Approve STRK to validator pool
+            let strk = self._strk_dispatcher();
+            strk.approve(validator, amount);
+
+            // Delegate to validator
+            pool.enter_delegation_pool(reward_address, amount.try_into().unwrap());
+
+            // Update tracking
+            self
+                .total_delegated_to_validator
+                .write(self.total_delegated_to_validator.read() + amount);
+
+            // Emit event
+            self
+                .emit(
+                    DelegatedToValidator {
+                        amount, total_delegated: self.total_delegated_to_validator.read(),
+                    },
+                );
+        }
+
+        /// Auto-delegate new capital (from user stakes or admin deposits)
+        /// No threshold check - delegate immediately to maximize yield
+        fn _auto_delegate_new_capital(ref self: ContractState) {
+            let (_current_liquid, _target_reserve, available) = self._calculate_liquidity();
+
+            if available > 0 {
+                self._delegate_to_validator(available);
+            }
+        }
+
+        /// Auto-delegate with threshold check (for rewards/freed funds)
+        /// Only delegate if excess > threshold to avoid micro-delegations
+        fn _auto_delegate_with_threshold(ref self: ContractState) {
+            let (_current_liquid, _target_reserve, available) = self._calculate_liquidity();
+            let threshold = self.auto_delegation_threshold.read();
+
+            if available > threshold {
+                self._delegate_to_validator(available);
+            }
+        }
+
+        /// Request undelegation from validator
+        fn _request_undelegate_from_validator(ref self: ContractState, amount: u256) {
+            let validator = self.validator_pool.read();
+            let zero_address: ContractAddress = 0.try_into().unwrap();
+            if validator == zero_address {
+                return;
+            }
+
+            if amount == 0 {
+                return;
+            }
+
+            let pool = self._validator_pool_dispatcher();
+            pool.exit_delegation_pool_intent(amount.try_into().unwrap());
+
+            // Update tracking (funds are pending undelegation)
+            self
+                .total_delegated_to_validator
+                .write(self.total_delegated_to_validator.read() - amount);
+
+            self.emit(UndelegationRequested { amount, validator });
+        }
     }
 }
