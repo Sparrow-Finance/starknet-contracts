@@ -73,12 +73,6 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
-
-    fn claim_validator_rewards(ref self: TContractState) -> u256;
-
-    fn get_delegation_stats(self: @TContractState) -> (u256, ContractAddress, bool);
-
-    fn set_validator_pool(ref self: TContractState, new_pool: ContractAddress);
 }
 
 // Error messages used in the contract
@@ -102,4 +96,5 @@ pub mod Errors {
     pub const REQUEST_NOT_READY: felt252 = 'Unlock request not ready';
     pub const TOO_MANY_REQUESTS: felt252 = 'Too many pending requests';
     pub const INVALID_REQUEST_INDEX: felt252 = 'Invalid request index';
+    pub const NO_VALIDATOR_SET: felt252 = 'No validator pool set';
 }
