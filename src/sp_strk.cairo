@@ -374,6 +374,9 @@ pub mod spSTRK {
             // Emit Staked event
             self.emit(Staked { user, strk_amount, sp_strk_amount });
 
+            // Auto-delegate new capital (no threshold)
+            self._auto_delegate_new_capital();
+
             // End reentrancy guard
             self.reentrancy_guard.end();
 
@@ -575,6 +578,9 @@ pub mod spSTRK {
             // Emit UnlockCancelled event
             self.emit(UnlockCancelled { user, request });
 
+            // Auto-delegate freed funds with threshold check
+            self._auto_delegate_with_threshold();
+
             // End reentrancy guard
             self.reentrancy_guard.end();
         }
@@ -741,6 +747,9 @@ pub mod spSTRK {
             // Transfer STRK tokens from owner to contract
             self._strk_transfer(get_caller_address(), get_contract_address(), strk_amount);
             self.emit(Deposited { from: get_caller_address(), amount: strk_amount });
+
+            // Auto-delegate new capital (no threshold)
+            self._auto_delegate_new_capital();
         }
 
         /// Withdraw STRK tokens from the contract
