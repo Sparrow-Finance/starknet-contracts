@@ -973,6 +973,143 @@ pub mod spSTRK {
             self.ownable.assert_only_owner();
             self.pausable.unpause();
         }
+
+        // ====================================
+        // Validator Delegation Functions
+        // ====================================
+
+        /// Set the validator pool address
+        fn set_validator_pool(ref self: ContractState, pool_address: ContractAddress) {
+            self.ownable.assert_only_owner();
+
+            let old_pool = self.validator_pool.read();
+            self.validator_pool.write(pool_address);
+
+            self.emit(ValidatorPoolSet { old_pool, new_pool: pool_address });
+        }
+
+        /// Manually delegate STRK to validator (admin override)
+        fn manual_delegate(ref self: ContractState, amount: u256) {
+            self.ownable.assert_only_owner();
+
+            assert(amount > 0, Errors::INVALID_AMOUNT);
+
+            let (_current_liquid, _target_reserve, available) = self._calculate_liquidity();
+            assert(amount <= available, Errors::INSUFFICIENT_FUNDS_FOR_DELEGATION);
+
+            self._delegate_to_validator(amount);
+        }
+
+        /// Finalize undelegation from validator
+        fn finalize_undelegate_from_validator(ref self: ContractState) -> u256 {
+            self.ownable.assert_only_owner();
+            self.reentrancy_guard.start();
+
+            let validator = self.validator_pool.read();
+            let zero_address: ContractAddress = 0.try_into().unwrap();
+            assert(validator != zero_address, Errors::NO_VALIDATOR_SET);
+
+            let pool = self._validator_pool_dispatcher();
+            let amount: u256 = pool.exit_delegation_pool_action(get_contract_address()).into();
+
+            self.emit(UndelegationFinalized { amount });
+
+            // Auto-delegate if we have excess after undelegation
+            self._auto_delegate_with_threshold();
+
+            self.reentrancy_guard.end();
+
+            amount
+        }
+
+        /// Claim rewards from validator and auto-distribute
+        fn claim_validator_rewards(ref self: ContractState) -> u256 {
+            self.ownable.assert_only_owner();
+            self.reentrancy_guard.start();
+
+            let validator = self.validator_pool.read();
+            let zero_address: ContractAddress = 0.try_into().unwrap();
+            assert(validator != zero_address, Errors::NO_VALIDATOR_SET);
+
+            let pool = self._validator_pool_dispatcher();
+            let rewards_claimed: u256 = pool.claim_rewards(get_contract_address()).into();
+
+            if rewards_claimed > 0 {
+                // Distribute rewards (same logic as add_rewards)
+                let dao_fees = (rewards_claimed * self.dao_fee_basis_points.read().into())
+                    / Constants::BASIS_POINTS;
+                let dev_fees = (rewards_claimed * self.dev_fee_basis_points.read().into())
+                    / Constants::BASIS_POINTS;
+                let user_rewards = rewards_claimed - dao_fees - dev_fees;
+
+                // Update accounting
+                self.total_pooled_STRK.write(self.total_pooled_STRK.read() + user_rewards);
+                self.accumulated_dao_fees.write(self.accumulated_dao_fees.read() + dao_fees);
+                self.accumulated_dev_fees.write(self.accumulated_dev_fees.read() + dev_fees);
+
+                // Auto-delegate excess with threshold check
+                self._auto_delegate_with_threshold();
+
+                // Emit events
+                self.emit(ValidatorRewardsClaimed { rewards: rewards_claimed });
+                self
+                    .emit(
+                        RewardsAdded {
+                            total_rewards: rewards_claimed, user_rewards, dao_fees, dev_fees,
+                        },
+                    );
+            }
+
+            self.reentrancy_guard.end();
+
+            rewards_claimed
+        }
+
+        /// Set the target reserve ratio
+        fn set_target_reserve_ratio(ref self: ContractState, new_ratio: u16) {
+            self.ownable.assert_only_owner();
+
+            assert(new_ratio >= Constants::MIN_RESERVE_RATIO, Errors::BELOW_MIN);
+            assert(new_ratio <= Constants::MAX_RESERVE_RATIO, Errors::ABOVE_MAX);
+
+            let old_ratio = self.target_reserve_ratio.read();
+            self.target_reserve_ratio.write(new_ratio);
+
+            self.emit(ReserveRatioUpdated { old_ratio, new_ratio });
+        }
+
+        /// Set the auto-delegation threshold
+        fn set_auto_delegation_threshold(ref self: ContractState, new_threshold: u256) {
+            self.ownable.assert_only_owner();
+
+            assert(new_threshold >= Constants::MIN_AUTO_DELEGATION_THRESHOLD, Errors::BELOW_MIN);
+            assert(new_threshold <= Constants::MAX_AUTO_DELEGATION_THRESHOLD, Errors::ABOVE_MAX);
+
+            let old_threshold = self.auto_delegation_threshold.read();
+            self.auto_delegation_threshold.write(new_threshold);
+
+            self.emit(AutoDelegationThresholdUpdated { old_threshold, new_threshold });
+        }
+
+        /// Get validator delegation info
+        fn get_validator_info(self: @ContractState) -> (ContractAddress, u256) {
+            (self.validator_pool.read(), self.total_delegated_to_validator.read())
+        }
+
+        /// Get reserve status
+        fn get_reserve_status(self: @ContractState) -> (u256, u256, u256) {
+            let (_current_liquid, target_reserve, available) = self._calculate_liquidity();
+            let contract_balance = self._strk_balance_of(get_contract_address());
+            let committed_fees = self.accumulated_dao_fees.read()
+                + self.accumulated_dev_fees.read();
+            let current_liquid = if contract_balance > committed_fees {
+                contract_balance - committed_fees
+            } else {
+                0
+            };
+
+            (current_liquid, target_reserve, available)
+        }
     }
 
     // ====================================

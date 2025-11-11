@@ -73,6 +73,34 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
+
+    // ====================================
+    // Validator delegation functions
+    // ====================================
+
+    /// Set the validator pool address
+    fn set_validator_pool(ref self: TContractState, pool_address: ContractAddress);
+
+    /// Manually delegate STRK to validator
+    fn manual_delegate(ref self: TContractState, amount: u256);
+
+    /// Finalize undelegation after validator exit period
+    fn finalize_undelegate_from_validator(ref self: TContractState) -> u256;
+
+    /// Claim rewards from validator and auto-distribute
+    fn claim_validator_rewards(ref self: TContractState) -> u256;
+
+    /// Set the target reserve ratio (e.g., 2000 = 20%)
+    fn set_target_reserve_ratio(ref self: TContractState, new_ratio: u16);
+
+    /// Set the auto-delegation threshold
+    fn set_auto_delegation_threshold(ref self: TContractState, new_threshold: u256);
+
+    /// Get validator delegation info
+    fn get_validator_info(self: @TContractState) -> (ContractAddress, u256);
+
+    /// Get reserve status (liquid, target, available)
+    fn get_reserve_status(self: @TContractState) -> (u256, u256, u256);
 }
 
 // Error messages used in the contract
@@ -97,4 +125,5 @@ pub mod Errors {
     pub const TOO_MANY_REQUESTS: felt252 = 'Too many pending requests';
     pub const INVALID_REQUEST_INDEX: felt252 = 'Invalid request index';
     pub const NO_VALIDATOR_SET: felt252 = 'No validator pool set';
+    pub const INSUFFICIENT_FUNDS_FOR_DELEGATION: felt252 = 'Insufficient funds for deleg';
 }
