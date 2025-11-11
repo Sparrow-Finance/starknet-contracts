@@ -422,10 +422,38 @@ pub mod spSTRK {
             // Transfer spSTRK tokens from user to contract
             self.erc20._transfer(user, get_contract_address(), sp_strk_amount);
 
-            // Calculate unlock time
-            let unlock_time = get_block_timestamp() + self.unlock_period.read();
+            // Calculate liquidity needs
+            let total_pooled = self.total_pooled_STRK.read();
+            let target_reserve = (total_pooled * self.target_reserve_ratio.read().into())
+                / Constants::BASIS_POINTS;
+
+            let contract_balance = self._strk_balance_of(get_contract_address());
+            let committed_fees = self.accumulated_dao_fees.read()
+                + self.accumulated_dev_fees.read();
+            let current_liquid = if contract_balance > committed_fees {
+                contract_balance - committed_fees
+            } else {
+                0
+            };
+
+            let future_locked = self.total_locked_in_unlocks.read() + strk_amount;
+
+            // Determine unlock time based on liquidity
+            let unlock_time = if current_liquid >= future_locked + target_reserve {
+                // Use normal unlock period (e.g., 7 days)
+                get_block_timestamp() + self.unlock_period.read()
+            } else {
+                // Need to undelegate from validator
+                let shortage = future_locked + target_reserve - current_liquid;
+                self._request_undelegate_from_validator(shortage);
+
+                // Use validator exit period (~21 days)
+                get_block_timestamp() + Constants::VALIDATOR_EXIT_PERIOD
+            };
+
             // Calculate expiry time
             let expiry_time = unlock_time + self.claim_window.read();
+
             // Store unlock request
             self
                 .unlock_requests
