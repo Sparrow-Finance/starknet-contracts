@@ -10,6 +10,9 @@ pub mod spSTRK {
     use openzeppelin::upgrades::interface::IUpgradeable;
     use sp_strk::components::constants::Constants;
     use sp_strk::interfaces::sp_strk::{Errors, IspSTRK, UnlockRequest};
+    use sp_strk::interfaces::validator_pool::{
+        IValidatorPoolDispatcher, IValidatorPoolDispatcherTrait,
+    };
     use sp_strk::types::init::InitParams;
     use starknet::event::EventEmitter;
     use starknet::storage::{
@@ -278,7 +281,6 @@ pub mod spSTRK {
         ValidatorRewardsClaimed: ValidatorRewardsClaimed,
         ReserveRatioUpdated: ReserveRatioUpdated,
         AutoDelegationThresholdUpdated: AutoDelegationThresholdUpdated,
-        
         #[flat]
         ERC20Event: ERC20Component::Event,
         #[flat]
@@ -308,6 +310,9 @@ pub mod spSTRK {
         self._set_min_stake_amount(params.min_stake_amount);
         self._set_unlock_period(params.unlock_period);
         self._set_claim_window(params.claim_window);
+
+        self.target_reserve_ratio.write(Constants::DEFAULT_RESERVE_RATIO);
+        self.auto_delegation_threshold.write(Constants::DEFAULT_AUTO_DELEGATION_THRESHOLD);
     }
 
     // ====================================
@@ -941,6 +946,11 @@ pub mod spSTRK {
         /// Helper to get STRK token dispatcher
         fn _strk_dispatcher(self: @ContractState) -> ERC20ABIDispatcher {
             ERC20ABIDispatcher { contract_address: self.strk_token.read() }
+        }
+
+        /// Helper to get validator pool dispatcher
+        fn _validator_pool_dispatcher(self: @ContractState) -> IValidatorPoolDispatcher {
+            IValidatorPoolDispatcher { contract_address: self.validator_pool.read() }
         }
 
         /// Helper to transfer STRK tokens
