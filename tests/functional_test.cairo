@@ -283,23 +283,28 @@ fn test_simple_unlock() {
 fn test_unlock_status() {
     let (sp_stark, strk) = init();
 
-    let amount = ether(1);
+    // Stake MORE to ensure enough liquidity for unlock + reserve
+    let stake_amount = ether(10);
+    let unlock_amount = ether(5);  // Less than stake, leaves room for reserve
     let user = get_contract_address();
 
-    strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
+    strk.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
 
     let timestamp: u64 = 1000000;
     start_cheat_block_timestamp(sp_stark.contract_address, timestamp);
-    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
 
-    let unlock_period: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
-    let claim_window: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
+    let unlock_period: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("unlock_period"), 1).span()
+    );
+    let claim_window: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("claim_window"), 1).span()
+    );
 
+    // With 10 STRK staked and 5 STRK unlock:
+    // Liquid: 10, Reserve needed: 2 (20% of 10), Future locked: 5
+    // 10 >= 5 + 2? YES! So short unlock period
     let (request, _, is_ready_1, is_expired_1) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(request.unlock_time, timestamp + unlock_period);
     assert_eq!(request.expiry_time, timestamp + unlock_period + claim_window);
@@ -314,7 +319,7 @@ fn test_unlock_status() {
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
     start_cheat_block_timestamp(
-        sp_stark.contract_address, timestamp + unlock_period + claim_window + 1,
+        sp_stark.contract_address, timestamp + unlock_period + claim_window + 1
     );
     let (_, _, is_ready_3, is_expired_3) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(is_ready_3, true);
@@ -399,19 +404,21 @@ fn test_claim_unlock_when_not_ready() {
 fn test_claim_unlock_when_expired() {
     let (sp_stark, strk) = init();
 
-    let amount = ether(1);
+    // Stake MORE to ensure short unlock period
+    let stake_amount = ether(10);
+    let unlock_amount = ether(5);
 
-    strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
+    strk.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
 
-    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
 
-    let unlock_period: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
-    let claim_window: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
+    let unlock_period: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("unlock_period"), 1).span()
+    );
+    let claim_window: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("claim_window"), 1).span()
+    );
 
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + claim_window + 1);
     sp_stark.claim_unlock(0);
@@ -424,29 +431,32 @@ fn test_successful_claim_unlock() {
     let sp_strk_token = erc20(sp_stark.contract_address);
 
     let user = get_contract_address();
-    let amount = ether(1);
+    
+    // Stake MORE to ensure enough liquidity
+    let stake_amount = ether(10);
+    let unlock_amount = ether(5);
 
     let initial_balance = strk.balance_of(user);
-    strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
-    assert_eq!(strk.balance_of(user), initial_balance - amount);
+    strk.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
+    assert_eq!(strk.balance_of(user), initial_balance - stake_amount);
 
-    sp_stark.request_unlock(amount, amount);
-    assert_eq!(sp_strk_token.balance_of(user), 0);
-    assert_eq!(sp_strk_token.total_supply(), amount);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
+    assert_eq!(sp_strk_token.balance_of(user), stake_amount - unlock_amount);
+    assert_eq!(sp_strk_token.total_supply(), stake_amount);
 
-    let unlock_period: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    let unlock_period: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("unlock_period"), 1).span()
+    );
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
     sp_stark.claim_unlock(0);
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
-    assert_eq!(sp_strk_token.balance_of(user), 0);
-    assert_eq!(sp_strk_token.total_supply(), 0);
+    assert_eq!(sp_strk_token.balance_of(user), stake_amount - unlock_amount);
+    assert_eq!(sp_strk_token.total_supply(), stake_amount - unlock_amount);
     assert_eq!(sp_stark.get_unlock_request_count(user), 0);
 
-    assert_eq!(strk.balance_of(get_contract_address()), initial_balance);
+    assert_eq!(strk.balance_of(user), initial_balance - stake_amount + unlock_amount);
 }
 
 #[test]
@@ -492,20 +502,23 @@ fn test_claim_multiple_unlocks() {
     let sp_strk_token = erc20(sp_stark.contract_address);
 
     let user = get_contract_address();
-    let amount = ether(1);
+    
+    // Stake ENOUGH to cover multiple unlocks + reserve
+    let stake_amount = ether(20);
+    let unlock_amount = ether(5);
 
-    strk.approve(sp_stark.contract_address, ether(3));
-    sp_stark.stake(ether(3), ether(3));
+    strk.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
 
-    sp_stark.request_unlock(amount, amount);
-    sp_stark.request_unlock(amount, amount);
-    sp_stark.request_unlock(amount, amount);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
 
     assert_eq!(sp_stark.get_unlock_request_count(user), 3);
 
-    let unlock_period: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    let unlock_period: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("unlock_period"), 1).span()
+    );
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
 
     sp_stark.claim_unlock(1);
@@ -519,7 +532,7 @@ fn test_claim_multiple_unlocks() {
 
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
-    assert_eq!(sp_strk_token.total_supply(), 0);
+    assert_eq!(sp_strk_token.total_supply(), stake_amount - (unlock_amount * 3));
 }
 
 #[test]
@@ -568,22 +581,24 @@ fn test_claim_expired() {
     let (sp_stark, strk) = init();
     let sp_stark_token = erc20(sp_stark.contract_address);
 
-    let amount = ether(1);
+    // Stake MORE to ensure short unlock period
+    let stake_amount = ether(10);
+    let unlock_amount = ether(5);
     let user = get_contract_address();
 
-    strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
+    strk.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
 
-    sp_stark.request_unlock(amount, amount);
-    assert_eq!(sp_stark_token.balance_of(user), 0);
+    sp_stark.request_unlock(unlock_amount, unlock_amount);
+    assert_eq!(sp_stark_token.balance_of(user), stake_amount - unlock_amount);
     assert_eq!(sp_stark.get_unlock_request_count(user), 1);
 
-    let unlock_period: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
-    let claim_window: u64 = deserialize::<
-        u64,
-    >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
+    let unlock_period: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("unlock_period"), 1).span()
+    );
+    let claim_window: u64 = deserialize::<u64>(
+        load(sp_stark.contract_address, selector!("claim_window"), 1).span()
+    );
 
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + claim_window + 1);
 
@@ -591,7 +606,7 @@ fn test_claim_expired() {
 
     stop_cheat_block_timestamp(sp_stark.contract_address);
 
-    assert_eq!(sp_stark_token.balance_of(user), amount);
+    assert_eq!(sp_stark_token.balance_of(user), stake_amount);
     assert_eq!(sp_stark.get_unlock_request_count(user), 0);
 }
 
@@ -608,6 +623,41 @@ fn test_claim_expired_too_early() {
     sp_stark.request_unlock(amount, amount);
 
     sp_stark.claim_expired(0);
+}
+
+#[test]
+fn test_long_unlock_period_insufficient_liquidity() {
+    let (sp_stark, strk) = init();
+    let user = get_contract_address();
+
+    // Stake small amount and try to unlock it all
+    // This will trigger validator undelegation path (21 days)
+    let amount = ether(1);
+    
+    strk.approve(sp_stark.contract_address, amount);
+    sp_stark.stake(amount, amount);
+
+    let timestamp: u64 = 1000000;
+    start_cheat_block_timestamp(sp_stark.contract_address, timestamp);
+    
+    // Unlock entire amount - not enough liquid left for 20% reserve
+    sp_stark.request_unlock(amount, amount);
+    
+    let (request, _, is_ready, is_expired) = sp_stark.get_unlock_request(user, 0);
+    
+    // Should use VALIDATOR_EXIT_PERIOD (21 days = 1814400 seconds)
+    assert_eq!(request.unlock_time, timestamp + 1814400);
+    assert_eq!(is_ready, false);
+    assert_eq!(is_expired, false);
+    
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+    
+    // Fast forward 21 days
+    start_cheat_block_timestamp(sp_stark.contract_address, timestamp + 1814400 + 1);
+    let (_, _, is_ready_after, _) = sp_stark.get_unlock_request(user, 0);
+    assert_eq!(is_ready_after, true);
+    
+    stop_cheat_block_timestamp(sp_stark.contract_address);
 }
 
 #[test]
@@ -742,4 +792,108 @@ fn test_upgrade() {
 
     let new_sp_stark = INewspSTRKDispatcher { contract_address: sp_stark.contract_address };
     assert_eq!(new_sp_stark.new_function(), 10);
+}
+
+#[test]
+fn test_set_validator_pool() {
+    let (sp_stark, _) = init();
+    
+    let validator_address: ContractAddress = 0x123.try_into().unwrap();
+    sp_stark.set_validator_pool(validator_address);
+    
+    let (pool, _delegated) = sp_stark.get_validator_info();
+    assert_eq!(pool, validator_address);
+}
+
+#[test]
+fn test_set_target_reserve_ratio() {
+    let (sp_stark, _) = init();
+    
+    // Change to 3000 (30%)
+    sp_stark.set_target_reserve_ratio(3000);
+    
+    // Stake some STRK to test
+    let (sp_stark_test, strk) = init();
+    strk.approve(sp_stark_test.contract_address, ether(100));
+    sp_stark_test.stake(ether(100), ether(100));
+    
+    sp_stark_test.set_target_reserve_ratio(3000);
+    let (_, new_target, _) = sp_stark_test.get_reserve_status();
+    
+    // New target should be 30% of 100 = 30 STRK
+    assert_eq!(new_target, ether(30));
+}
+
+#[test]
+fn test_set_auto_delegation_threshold() {
+    let (sp_stark, _) = init();
+    
+    let new_threshold = ether(100);
+    sp_stark.set_auto_delegation_threshold(new_threshold);
+}
+
+#[test]
+#[should_panic(expected: ('Value below minimum',))]
+fn test_reserve_ratio_too_low() {
+    let (sp_stark, _) = init();
+    sp_stark.set_target_reserve_ratio(400); // Below 500 (5%)
+}
+
+#[test]
+#[should_panic(expected: ('Value above maximum',))]
+fn test_reserve_ratio_too_high() {
+    let (sp_stark, _) = init();
+    sp_stark.set_target_reserve_ratio(5001); // Above 5000 (50%)
+}
+
+#[test]
+#[should_panic(expected: ('Value below minimum',))]
+fn test_delegation_threshold_too_low() {
+    let (sp_stark, _) = init();
+    sp_stark.set_auto_delegation_threshold(ether(0)); // Below 1 STRK
+}
+
+#[test]
+#[should_panic(expected: ('Value above maximum',))]
+fn test_delegation_threshold_too_high() {
+    let (sp_stark, _) = init();
+    sp_stark.set_auto_delegation_threshold(ether(1001)); // Above 1000 STRK
+}
+
+#[test]
+fn test_get_reserve_status() {
+    let (sp_stark, strk) = init();
+    
+    // Initially no funds
+    let (liquid_1, target_1, available_1) = sp_stark.get_reserve_status();
+    assert_eq!(liquid_1, 0);
+    assert_eq!(target_1, 0);
+    assert_eq!(available_1, 0);
+    
+    // Stake 100 STRK
+    strk.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    let (liquid_2, target_2, available_2) = sp_stark.get_reserve_status();
+    
+    // Target should be 20% of 100 = 20 STRK
+    assert_eq!(target_2, ether(20));
+    
+    // Liquid should be 100 STRK (all in contract initially)
+    assert_eq!(liquid_2, ether(100));
+    
+    // Available should be 80 STRK (100 - 20)
+    assert_eq!(available_2, ether(80));
+}
+
+#[test]
+fn test_get_validator_info_initial() {
+    let (sp_stark, _) = init();
+    
+    let (pool, delegated) = sp_stark.get_validator_info();
+    
+    // Initially no validator set
+    let zero_address: ContractAddress = 0.try_into().unwrap();
+    assert_eq!(pool, zero_address);
+    assert_eq!(delegated, 0);
 }
