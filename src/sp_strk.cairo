@@ -11,7 +11,6 @@ pub mod spSTRK {
     use sp_strk::components::constants::Constants;
     use sp_strk::interfaces::sp_strk::{Errors, IspSTRK, UnlockRequest};
     use sp_strk::types::init::InitParams;
-    use sp_strk::interfaces::validator_pool::{IValidatorPoolDispatcher, IValidatorPoolDispatcherTrait};
     use starknet::event::EventEmitter;
     use starknet::storage::{
         Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
@@ -80,15 +79,11 @@ pub mod spSTRK {
         // Developer fee in basis points
         dev_fee_basis_points: u16,
         total_locked_in_unlocks: u256,
-
-        // ===== VALIDATOR DELEGATION STORAGE =====
-        // Address of the validator pool to delegate to
+        // Validator delegation
         validator_pool: ContractAddress,
-        // Total amount delegated to validator pool
-        total_delegated: u256,
-        // Track if we've entered the pool (first time vs subsequent)
-        has_entered_pool: bool,
-
+        total_delegated_to_validator: u256,
+        target_reserve_ratio: u16,
+        auto_delegation_threshold: u256,
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -215,6 +210,47 @@ pub mod spSTRK {
         new_window: u64,
     }
 
+    // validator delegation
+    #[derive(Drop, starknet::Event)]
+    struct ValidatorPoolSet {
+        old_pool: ContractAddress,
+        new_pool: ContractAddress,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct DelegatedToValidator {
+        amount: u256,
+        total_delegated: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct UndelegationRequested {
+        amount: u256,
+        validator: ContractAddress,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct UndelegationFinalized {
+        amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct ValidatorRewardsClaimed {
+        rewards: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct ReserveRatioUpdated {
+        old_ratio: u16,
+        new_ratio: u16,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct AutoDelegationThresholdUpdated {
+        old_threshold: u256,
+        new_threshold: u256,
+    }
+
 
     #[event]
     #[derive(Drop, starknet::Event)]
@@ -234,6 +270,15 @@ pub mod spSTRK {
         MinStakeAmountUpdated: MinStakeAmountUpdated,
         UnlockPeriodUpdated: UnlockPeriodUpdated,
         ClaimWindowUpdated: ClaimWindowUpdated,
+        // validator delegation
+        ValidatorPoolSet: ValidatorPoolSet,
+        DelegatedToValidator: DelegatedToValidator,
+        UndelegationRequested: UndelegationRequested,
+        UndelegationFinalized: UndelegationFinalized,
+        ValidatorRewardsClaimed: ValidatorRewardsClaimed,
+        ReserveRatioUpdated: ReserveRatioUpdated,
+        AutoDelegationThresholdUpdated: AutoDelegationThresholdUpdated,
+        
         #[flat]
         ERC20Event: ERC20Component::Event,
         #[flat]
@@ -263,11 +308,6 @@ pub mod spSTRK {
         self._set_min_stake_amount(params.min_stake_amount);
         self._set_unlock_period(params.unlock_period);
         self._set_claim_window(params.claim_window);
-
-        // ===== INITIALIZE VALIDATOR DELEGATION =====
-        self.validator_pool.write(params.validator_pool);
-        self.total_delegated.write(0);
-        self.has_entered_pool.write(false);
     }
 
     // ====================================
@@ -320,13 +360,6 @@ pub mod spSTRK {
 
             // Transfer STRK tokens from user to contract
             self._strk_transfer(user, get_contract_address(), strk_amount);
-
-            // ===== AUTO-DELEGATE 90% TO VALIDATOR =====
-            let amount_to_delegate = (strk_amount * 90) / 100;
-            if amount_to_delegate > 0 {
-                self._auto_delegate_to_validator(amount_to_delegate);
-            }
-
             // Mint spSTRK tokens to user
             self.erc20.mint(user, sp_strk_amount);
 
@@ -898,71 +931,6 @@ pub mod spSTRK {
             self.ownable.assert_only_owner();
             self.pausable.unpause();
         }
-
-        /// Claim accumulated rewards from validator pool
-        /// This increases the exchange rate for all spSTRK holders
-        /// # Returns
-        /// Amount of rewards claimed
-        fn claim_validator_rewards(ref self: ContractState) -> u256 {
-            self.ownable.assert_only_owner();
-            self.reentrancy_guard.start();
-            
-            let pool_address = self.validator_pool.read();
-            assert(pool_address.into() != 0, 'Validator pool not set');
-            
-            let pool = IValidatorPoolDispatcher { contract_address: pool_address };
-            let contract_addr = get_contract_address();
-            
-            // Claim rewards (returns u128)
-            let rewards_u128 = pool.claim_rewards(pool_member: contract_addr);
-            let rewards: u256 = rewards_u128.into();
-            
-            if rewards > 0 {
-                // Calculate fees
-                let dao_fees = (rewards * self.dao_fee_basis_points.read().into()) 
-                    / Constants::BASIS_POINTS;
-                let dev_fees = (rewards * self.dev_fee_basis_points.read().into()) 
-                    / Constants::BASIS_POINTS;
-                let user_rewards = rewards - dao_fees - dev_fees;
-                
-                // Update state - increases exchange rate!
-                self.total_pooled_STRK.write(self.total_pooled_STRK.read() + user_rewards);
-                self.accumulated_dao_fees.write(self.accumulated_dao_fees.read() + dao_fees);
-                self.accumulated_dev_fees.write(self.accumulated_dev_fees.read() + dev_fees);
-                
-                // Emit event
-                self.emit(
-                    RewardsAdded { 
-                        total_rewards: rewards, 
-                        user_rewards, 
-                        dao_fees, 
-                        dev_fees 
-                    }
-                );
-            }
-            
-            self.reentrancy_guard.end();
-            rewards
-        }
-
-        /// Get delegation statistics
-        /// Returns (total_delegated, validator_pool_address, has_entered_pool)
-        fn get_delegation_stats(self: @ContractState) -> (u256, ContractAddress, bool) {
-            (
-                self.total_delegated.read(),
-                self.validator_pool.read(),
-                self.has_entered_pool.read()
-            )
-        }
-
-        /// Update validator pool address (admin only, emergency use)
-        /// # Arguments
-        /// * `new_pool` - New validator pool address
-        fn set_validator_pool(ref self: ContractState, new_pool: ContractAddress) {
-            self.ownable.assert_only_owner();
-            assert(new_pool.into() != 0, 'Invalid pool address');
-            self.validator_pool.write(new_pool);
-        }
     }
 
     // ====================================
@@ -1090,65 +1058,6 @@ pub mod spSTRK {
                 // Calculate STRK amount based on exchange rate
                 (sp_strk_amount * self.total_pooled_STRK.read()) / self.erc20.total_supply()
             }
-        }
-
-        /// Automatically delegate to validator pool when user stakes
-        /// Called internally during stake() - delegates 90% of stake
-        /// # Arguments
-        /// * `amount` - Amount to delegate (u256)
-        fn _auto_delegate_to_validator(ref self: ContractState, amount: u256) {
-            // Skip if no amount
-            if amount == 0 {
-                return;
-            }
-
-            // Get validator pool address
-            let pool_address = self.validator_pool.read();
-            
-            // Skip if no validator pool configured
-            if pool_address.into() == 0 {
-                return;
-            }
-
-            // Convert u256 to u128 (Pool contract requires u128)
-            let amount_u128: u128 = match amount.try_into() {
-                Option::Some(val) => val,
-                Option::None => {
-                    // Amount too large for u128, skip delegation
-                    return;
-                }
-            };
-
-            // Get pool dispatcher
-            let pool = IValidatorPoolDispatcher { contract_address: pool_address };
-            
-            // Get STRK token for approval
-            let strk_token = self._strk_dispatcher();
-            let contract_addr = get_contract_address();
-            
-            // Approve pool to spend our STRK
-            strk_token.approve(pool_address, amount);
-
-            // Delegate to pool
-            if self.has_entered_pool.read() {
-                // Already a member - add more
-                pool.add_to_delegation_pool(
-                    pool_member: contract_addr,
-                    amount: amount_u128
-                );
-            } else {
-                // First time - enter the pool
-                pool.enter_delegation_pool(
-                    reward_address: contract_addr,  // Rewards come back to us
-                    amount: amount_u128
-                );
-                // Mark as entered
-                self.has_entered_pool.write(true);
-            }
-
-            // Update tracking
-            let current_delegated = self.total_delegated.read();
-            self.total_delegated.write(current_delegated + amount);
         }
     }
 }
