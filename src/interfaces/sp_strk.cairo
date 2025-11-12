@@ -73,6 +73,13 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
+
+    /// Claim rewards from validator
+    fn claim_validator_rewards(ref self: TContractState);
+    /// Start unbonding from validator
+    fn unstake_from_validator(ref self: TContractState, amount: u256);
+    /// Complete unbonding from validator (after 7 days)
+    fn complete_validator_unstaking(ref self: TContractState);
 }
 
 // Error messages used in the contract

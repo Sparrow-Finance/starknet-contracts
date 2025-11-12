@@ -10,6 +10,7 @@ pub mod interfaces {
 pub mod mock {
     pub mod erc20;
     pub mod upgrade;
+    pub mod validator_pool;
 }
 
 pub mod types {

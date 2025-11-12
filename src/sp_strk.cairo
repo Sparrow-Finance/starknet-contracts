@@ -10,7 +10,9 @@ pub mod spSTRK {
     use openzeppelin::upgrades::interface::IUpgradeable;
     use sp_strk::components::constants::Constants;
     use sp_strk::interfaces::sp_strk::{Errors, IspSTRK, UnlockRequest};
-    use sp_strk::interfaces::validator_pool::{IValidatorPoolDispatcher, IValidatorPoolDispatcherTrait};
+    use sp_strk::interfaces::validator_pool::{
+        IValidatorPoolDispatcher, IValidatorPoolDispatcherTrait,
+    };
     use sp_strk::types::init::InitParams;
     use starknet::event::EventEmitter;
     use starknet::storage::{
@@ -19,6 +21,7 @@ pub mod spSTRK {
     use starknet::{
         ClassHash, ContractAddress, get_block_timestamp, get_caller_address, get_contract_address,
     };
+    use core::num::traits::Zero;
 
     // ====================================
     // OpenZeppelin components and their implementations
@@ -259,13 +262,11 @@ pub mod spSTRK {
         MinStakeAmountUpdated: MinStakeAmountUpdated,
         UnlockPeriodUpdated: UnlockPeriodUpdated,
         ClaimWindowUpdated: ClaimWindowUpdated,
-
         //validator
         ValidatorRewardsClaimed: ValidatorRewardsClaimed,
         ValidatorUnbondingStarted: ValidatorUnbondingStarted,
         ValidatorUnbondingCompleted: ValidatorUnbondingCompleted,
         DelegatedToValidator: DelegatedToValidator,
-
         #[flat]
         ERC20Event: ERC20Component::Event,
         #[flat]
@@ -358,6 +359,9 @@ pub mod spSTRK {
 
             // Emit Staked event
             self.emit(Staked { user, strk_amount, sp_strk_amount });
+
+            // Auto-delegate excess to validator (only on user stake)
+            self._auto_delegate_to_validator();
 
             // End reentrancy guard
             self.reentrancy_guard.end();
@@ -921,6 +925,100 @@ pub mod spSTRK {
             self.ownable.assert_only_owner();
             self.pausable.unpause();
         }
+
+        /// Claim rewards from validator
+        /// # Access Control
+        /// Only the contract owner can call this function
+        fn claim_validator_rewards(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            self.reentrancy_guard.start();
+
+            let validator_pool = self.validator_pool.read();
+            assert(!validator_pool.is_zero(), 'Validator not set');
+
+            // Claim rewards from validator
+            let rewards = self._claim_rewards_from_validator();
+
+            assert(rewards > 0, 'No rewards to claim');
+
+            // Calculate fees and user rewards (same logic as add_rewards)
+            let dao_fees = (rewards * self.dao_fee_basis_points.read().into())
+                / Constants::BASIS_POINTS;
+            let dev_fees = (rewards * self.dev_fee_basis_points.read().into())
+                / Constants::BASIS_POINTS;
+            let total_fees = dao_fees + dev_fees;
+            let user_rewards = rewards - total_fees;
+
+            // Update total pooled STRK and accumulated fees
+            self.total_pooled_STRK.write(self.total_pooled_STRK.read() + user_rewards);
+            self.accumulated_dao_fees.write(self.accumulated_dao_fees.read() + dao_fees);
+            self.accumulated_dev_fees.write(self.accumulated_dev_fees.read() + dev_fees);
+
+            self.emit(ValidatorRewardsClaimed { rewards, dao_fees, dev_fees, user_rewards });
+
+            self.reentrancy_guard.end();
+        }
+
+        /// Start unbonding from validator
+        /// # Arguments
+        /// * `amount` - The amount of STRK tokens to unbond
+        /// # Access Control
+        /// Only the contract owner can call this function
+        fn unstake_from_validator(ref self: ContractState, amount: u256) {
+            self.ownable.assert_only_owner();
+            self.reentrancy_guard.start();
+
+            let validator_pool = self.validator_pool.read();
+            assert(!validator_pool.is_zero(), 'Validator not set');
+            assert(amount > 0, Errors::INVALID_AMOUNT);
+
+            let delegated = self.total_delegated_to_validator.read();
+            assert(delegated >= amount, 'Insufficient delegated amount');
+
+            // Check no pending unbonding
+            assert(self.pending_validator_unbonding.read() == 0, 'Unbonding already pending');
+
+            // Start unbonding process
+            self._start_unbonding_from_validator(amount);
+
+            // Track unbonding
+            self.pending_validator_unbonding.write(amount);
+            // 7 days unbonding period (mainnet)
+            let unbond_time = get_block_timestamp() + (7 * 24 * 60 * 60);
+            self.validator_unbond_time.write(unbond_time);
+
+            self.emit(ValidatorUnbondingStarted { amount, unbond_time });
+
+            self.reentrancy_guard.end();
+        }
+
+        /// Complete unbonding from validator (after 7 days)
+        /// # Access Control
+        /// Only the contract owner can call this function
+        fn complete_validator_unstaking(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            self.reentrancy_guard.start();
+
+            let pending = self.pending_validator_unbonding.read();
+            assert(pending > 0, 'No pending unbonding');
+
+            let unbond_time = self.validator_unbond_time.read();
+            assert(get_block_timestamp() >= unbond_time, 'Unbonding period not finished');
+
+            // Complete unbonding - STRK returns to contract
+            let returned_amount = self._complete_unbonding_from_validator();
+
+            // Update tracking
+            self
+                .total_delegated_to_validator
+                .write(self.total_delegated_to_validator.read() - pending);
+            self.pending_validator_unbonding.write(0);
+            self.validator_unbond_time.write(0);
+
+            self.emit(ValidatorUnbondingCompleted { amount: returned_amount });
+
+            self.reentrancy_guard.end();
+        }
     }
 
     // ====================================
@@ -1048,6 +1146,115 @@ pub mod spSTRK {
                 // Calculate STRK amount based on exchange rate
                 (sp_strk_amount * self.total_pooled_STRK.read()) / self.erc20.total_supply()
             }
+        }
+
+        /// Auto-delegate excess STRK to validator (maintaining 10% buffer)
+        fn _auto_delegate_to_validator(ref self: ContractState) {
+            let validator_pool = self.validator_pool.read();
+
+            // Skip if no validator set
+            if validator_pool.is_zero() {
+                return;
+            }
+
+            let total_pooled = self.total_pooled_STRK.read();
+            let contract_balance = self._strk_balance_of(get_contract_address());
+
+            // Calculate 10% buffer requirement
+            let min_buffer = (total_pooled * 1000) / 10000; // 10%
+
+            // Only delegate if we have excess above buffer
+            if contract_balance > min_buffer {
+                let to_delegate = contract_balance - min_buffer;
+
+                // Only delegate if amount is meaningful (> 0.01 STRK to avoid dust)
+                if to_delegate > 10_000_000_000_000_000 { // 0.01 STRK
+                    let current_delegated = self.total_delegated_to_validator.read();
+
+                    if current_delegated == 0 {
+                        // First time delegation
+                        self._enter_delegation_pool(to_delegate);
+                    } else {
+                        // Add to existing delegation
+                        self._add_to_delegation_pool(to_delegate);
+                    }
+
+                    // Update tracking
+                    self.total_delegated_to_validator.write(current_delegated + to_delegate);
+
+                    self
+                        .emit(
+                            DelegatedToValidator {
+                                amount: to_delegate,
+                                total_delegated: current_delegated + to_delegate,
+                            },
+                        );
+                }
+            }
+        }
+
+        /// Enter delegation pool (first time)
+        fn _enter_delegation_pool(ref self: ContractState, amount: u256) {
+            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+
+            let contract_address = get_contract_address();
+            let amount_u128: u128 = amount.try_into().expect('Amount overflow');
+
+            // Transfer STRK to validator for staking
+            let strk_token = self._strk_dispatcher();
+            strk_token.approve(self.validator_pool.read(), amount);
+
+            // Enter pool (reward_address = our contract address)
+            validator_pool.enter_delegation_pool(contract_address, amount_u128);
+        }
+
+        /// Add to existing delegation
+        fn _add_to_delegation_pool(ref self: ContractState, amount: u256) {
+            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+
+            let contract_address = get_contract_address();
+            let amount_u128: u128 = amount.try_into().expect('Amount overflow');
+
+            // Transfer STRK to validator for staking
+            let strk_token = self._strk_dispatcher();
+            strk_token.approve(self.validator_pool.read(), amount);
+
+            // Add to pool
+            validator_pool.add_to_delegation_pool(contract_address, amount_u128);
+        }
+
+        /// Start unbonding from validator
+        fn _start_unbonding_from_validator(ref self: ContractState, amount: u256) {
+            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+
+            let amount_u128: u128 = amount.try_into().expect('Amount overflow');
+
+            // Request to exit delegation pool (starts 7-day unbonding)
+            validator_pool.exit_delegation_pool_intent(amount_u128);
+        }
+
+        /// Complete unbonding from validator (after 7 days)
+        fn _complete_unbonding_from_validator(ref self: ContractState) -> u256 {
+            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+
+            let contract_address = get_contract_address();
+
+            // Complete exit - STRK returns to our contract
+            let returned: u128 = validator_pool.exit_delegation_pool_action(contract_address);
+
+            returned.into()
+        }
+
+        /// Claim rewards from validator
+        fn _claim_rewards_from_validator(ref self: ContractState) -> u256 {
+            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+
+            let contract_address = get_contract_address();
+
+            // Claim rewards - STRK rewards come to our contract
+            let rewards: u128 = validator_pool.claim_rewards(contract_address);
+
+            rewards.into()
         }
     }
 }
