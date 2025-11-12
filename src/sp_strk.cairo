@@ -10,6 +10,7 @@ pub mod spSTRK {
     use openzeppelin::upgrades::interface::IUpgradeable;
     use sp_strk::components::constants::Constants;
     use sp_strk::interfaces::sp_strk::{Errors, IspSTRK, UnlockRequest};
+    use sp_strk::interfaces::validator_pool::{IValidatorPoolDispatcher, IValidatorPoolDispatcherTrait};
     use sp_strk::types::init::InitParams;
     use starknet::event::EventEmitter;
     use starknet::storage::{
@@ -79,6 +80,14 @@ pub mod spSTRK {
         // Developer fee in basis points
         dev_fee_basis_points: u16,
         total_locked_in_unlocks: u256,
+        // Validator pool contract address
+        validator_pool: ContractAddress,
+        // Total STRK delegated to validator
+        total_delegated_to_validator: u256,
+        // Track pending unbonding from validator
+        pending_validator_unbonding: u256,
+        // Timestamp when unbonding completes
+        validator_unbond_time: u64,
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -205,6 +214,32 @@ pub mod spSTRK {
         new_window: u64,
     }
 
+    //validator
+    #[derive(Drop, starknet::Event)]
+    struct ValidatorRewardsClaimed {
+        rewards: u256,
+        dao_fees: u256,
+        dev_fees: u256,
+        user_rewards: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct ValidatorUnbondingStarted {
+        amount: u256,
+        unbond_time: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct ValidatorUnbondingCompleted {
+        amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct DelegatedToValidator {
+        amount: u256,
+        total_delegated: u256,
+    }
+
 
     #[event]
     #[derive(Drop, starknet::Event)]
@@ -224,6 +259,13 @@ pub mod spSTRK {
         MinStakeAmountUpdated: MinStakeAmountUpdated,
         UnlockPeriodUpdated: UnlockPeriodUpdated,
         ClaimWindowUpdated: ClaimWindowUpdated,
+
+        //validator
+        ValidatorRewardsClaimed: ValidatorRewardsClaimed,
+        ValidatorUnbondingStarted: ValidatorUnbondingStarted,
+        ValidatorUnbondingCompleted: ValidatorUnbondingCompleted,
+        DelegatedToValidator: DelegatedToValidator,
+
         #[flat]
         ERC20Event: ERC20Component::Event,
         #[flat]
@@ -249,6 +291,9 @@ pub mod spSTRK {
 
         // Initialize Config params
         self.strk_token.write(params.strk_token);
+        //validaot pool initialization
+        self.validator_pool.write(params.validator_pool);
+
         self._set_fees(params.dao_fee_basis_points, params.dev_fee_basis_points);
         self._set_min_stake_amount(params.min_stake_amount);
         self._set_unlock_period(params.unlock_period);

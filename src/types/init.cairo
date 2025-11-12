@@ -17,4 +17,6 @@ pub struct InitParams {
     pub unlock_period: u64,
     // Claim window in seconds
     pub claim_window: u64,
+    // Validator pool contract address
+    pub validator_pool: ContractAddress,
 }
