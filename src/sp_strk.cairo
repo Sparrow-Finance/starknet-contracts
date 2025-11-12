@@ -1,5 +1,6 @@
 #[starknet::contract]
 pub mod spSTRK {
+    use core::num::traits::Zero;
     use openzeppelin::access::ownable::OwnableComponent;
     use openzeppelin::security::pausable::PausableComponent;
     use openzeppelin::security::reentrancyguard::ReentrancyGuardComponent;
@@ -21,7 +22,6 @@ pub mod spSTRK {
     use starknet::{
         ClassHash, ContractAddress, get_block_timestamp, get_caller_address, get_contract_address,
     };
-    use core::num::traits::Zero;
 
     // ====================================
     // OpenZeppelin components and their implementations
@@ -714,6 +714,30 @@ pub mod spSTRK {
             )
         }
 
+        /// Get validator unbonding status
+        /// # Returns
+        /// (pending_amount, initiated_timestamp, estimated_completion_time, can_attempt_complete)
+        fn get_validator_unbonding_status(self: @ContractState) -> (u256, u64, u64, bool) {
+            let pending = self.pending_validator_unbonding.read();
+            let initiated_time = self.validator_unbond_time.read();
+
+            if pending == 0 {
+                return (0, 0, 0, false);
+            }
+
+            // Estimate completion based on when it was initiated
+            // For Sepolia: 5 minutes = 300 seconds
+            // For Mainnet: 7 days = 604800 seconds
+            // Using 300 for Sepolia testnet
+            let estimated_completion = initiated_time + 300;
+
+            // Can attempt if estimated time has passed
+            // (actual validation happens in validator pool contract)
+            let can_attempt = get_block_timestamp() >= estimated_completion;
+
+            (pending, initiated_time, estimated_completion, can_attempt)
+        }
+
         /// ====================================
         /// Admin Functions
         /// ====================================
@@ -983,16 +1007,25 @@ pub mod spSTRK {
 
             // Track unbonding
             self.pending_validator_unbonding.write(amount);
-            // 7 days unbonding period (mainnet)
-            let unbond_time = get_block_timestamp() + (7 * 24 * 60 * 60);
-            self.validator_unbond_time.write(unbond_time);
 
-            self.emit(ValidatorUnbondingStarted { amount, unbond_time });
+            // Store the time when unbonding was initiated (for informational/UI purposes only)
+            let unbond_initiated_time = get_block_timestamp();
+            self.validator_unbond_time.write(unbond_initiated_time);
+
+            self
+                .emit(
+                    ValidatorUnbondingStarted {
+                        amount,
+                        unbond_time: unbond_initiated_time // When it was started, not when it completes
+                    },
+                );
 
             self.reentrancy_guard.end();
         }
 
-        /// Complete unbonding from validator (after 7 days)
+        /// Complete unbonding from validator
+        /// Can be called after the validator pool's unbonding period has passed
+        /// The validator pool contract will revert if the unbonding period is not complete
         /// # Access Control
         /// Only the contract owner can call this function
         fn complete_validator_unstaking(ref self: ContractState) {
@@ -1002,10 +1035,12 @@ pub mod spSTRK {
             let pending = self.pending_validator_unbonding.read();
             assert(pending > 0, 'No pending unbonding');
 
-            let unbond_time = self.validator_unbond_time.read();
-            assert(get_block_timestamp() >= unbond_time, 'Unbonding period not finished');
+            // REMOVED: Time check - let validator pool handle this
+            // let unbond_time = self.validator_unbond_time.read();
+            // assert(get_block_timestamp() >= unbond_time, 'Unbonding period not finished');
 
             // Complete unbonding - STRK returns to contract
+            // This will revert if the validator pool's unbonding period is not finished
             let returned_amount = self._complete_unbonding_from_validator();
 
             // Update tracking
@@ -1195,7 +1230,9 @@ pub mod spSTRK {
 
         /// Enter delegation pool (first time)
         fn _enter_delegation_pool(ref self: ContractState, amount: u256) {
-            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+            let validator_pool = IValidatorPoolDispatcher {
+                contract_address: self.validator_pool.read(),
+            };
 
             let contract_address = get_contract_address();
             let amount_u128: u128 = amount.try_into().expect('Amount overflow');
@@ -1210,7 +1247,9 @@ pub mod spSTRK {
 
         /// Add to existing delegation
         fn _add_to_delegation_pool(ref self: ContractState, amount: u256) {
-            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+            let validator_pool = IValidatorPoolDispatcher {
+                contract_address: self.validator_pool.read(),
+            };
 
             let contract_address = get_contract_address();
             let amount_u128: u128 = amount.try_into().expect('Amount overflow');
@@ -1225,7 +1264,9 @@ pub mod spSTRK {
 
         /// Start unbonding from validator
         fn _start_unbonding_from_validator(ref self: ContractState, amount: u256) {
-            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+            let validator_pool = IValidatorPoolDispatcher {
+                contract_address: self.validator_pool.read(),
+            };
 
             let amount_u128: u128 = amount.try_into().expect('Amount overflow');
 
@@ -1235,7 +1276,9 @@ pub mod spSTRK {
 
         /// Complete unbonding from validator (after 7 days)
         fn _complete_unbonding_from_validator(ref self: ContractState) -> u256 {
-            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+            let validator_pool = IValidatorPoolDispatcher {
+                contract_address: self.validator_pool.read(),
+            };
 
             let contract_address = get_contract_address();
 
@@ -1247,7 +1290,9 @@ pub mod spSTRK {
 
         /// Claim rewards from validator
         fn _claim_rewards_from_validator(ref self: ContractState) -> u256 {
-            let validator_pool = IValidatorPoolDispatcher { contract_address: self.validator_pool.read() };
+            let validator_pool = IValidatorPoolDispatcher {
+                contract_address: self.validator_pool.read(),
+            };
 
             let contract_address = get_contract_address();
 

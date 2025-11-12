@@ -45,6 +45,8 @@ pub trait IspSTRK<TContractState> {
     ///  Get overall contract statistics
     fn get_stats(self: @TContractState) -> (u256, u256, u256, u256, u256, u256, u16, u16);
 
+    fn get_validator_unbonding_status(self: @TContractState) -> (u256, u64, u64, bool);
+
     // ====================================
     // Admin functions
     // ====================================
