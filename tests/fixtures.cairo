@@ -14,6 +14,16 @@ pub fn deploy_contract(params: InitParams) -> IspSTRKDispatcher {
     IspSTRKDispatcher { contract_address }
 }
 
+pub fn deploy_mock_validator() -> ContractAddress {
+    let contract = declare("MockValidatorPool").unwrap().contract_class();
+    let calldata = array![];
+    
+    let (contract_address, _) = contract.deploy(@calldata).unwrap();
+    
+    contract_address
+}
+
+
 // Deploy mock ERC20 token with given recipient
 pub fn deploy_mock_token(recipient: ContractAddress) -> ERC20ABIDispatcher {
     let contract_class = declare("MockERC20").unwrap().contract_class();

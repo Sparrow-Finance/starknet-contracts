@@ -12,12 +12,15 @@ use sp_strk::mock::upgrade::{INewspSTRKDispatcher, INewspSTRKDispatcherTrait};
 use sp_strk::sp_strk::spSTRK;
 use sp_strk::types::init::InitParams;
 use starknet::{ContractAddress, get_contract_address};
-use crate::fixtures::{deploy_contract, deploy_mock_token};
+use crate::fixtures::{deploy_contract, deploy_mock_token, deploy_mock_validator};
 use crate::utils::{deserialize, erc20, ether, serialize};
 
 fn init() -> (IspSTRKDispatcher, ERC20ABIDispatcher) {
     let owner = get_contract_address();
     let strk_token = deploy_mock_token(owner);
+
+    let mock_validator = deploy_mock_validator();  
+
     let sp_strk = deploy_contract(
         InitParams {
             owner,
@@ -27,6 +30,7 @@ fn init() -> (IspSTRKDispatcher, ERC20ABIDispatcher) {
             min_stake_amount: 10000000000000000,
             unlock_period: 60,
             claim_window: 604800,
+            validator_pool: mock_validator,
         },
     );
 
@@ -742,4 +746,349 @@ fn test_upgrade() {
 
     let new_sp_stark = INewspSTRKDispatcher { contract_address: sp_stark.contract_address };
     assert_eq!(new_sp_stark.new_function(), 10);
+}
+
+// ========================================================
+// VALIDATOR INTEGRATION TESTS
+// ========================================================
+
+#[test]
+fn test_stake_with_auto_delegation() {
+    let (sp_stark, strk_token) = init();
+    let stake_amount = ether(100);
+
+    // Check contract balance before
+    let balance_before = strk_token.balance_of(sp_stark.contract_address);
+
+    // User stakes
+    strk_token.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
+
+    // After staking, contract should have ~10% buffer
+    let balance_after = strk_token.balance_of(sp_stark.contract_address);
+    let expected_buffer = (stake_amount * 10) / 100; // 10 STRK
+
+    // Contract should have approximately the buffer (10%)
+    // Due to dust threshold (0.01 STRK), it might have slightly more
+    assert!(balance_after >= expected_buffer - ether(1), "Buffer too low");
+    assert!(balance_after <= stake_amount, "No delegation happened");
+}
+
+#[test]
+fn test_multiple_stakes_trigger_add_to_delegation() {
+    let (sp_stark, strk_token) = init();
+    
+    // First stake - triggers enter_delegation_pool
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    // Second stake - should trigger add_to_delegation_pool
+    strk_token.approve(sp_stark.contract_address, ether(50));
+    sp_stark.stake(ether(50), ether(50));
+    
+    // Contract should still maintain ~10% buffer of total
+    let total_staked = ether(150);
+    let expected_buffer = (total_staked * 10) / 100;
+    let actual_buffer = strk_token.balance_of(sp_stark.contract_address);
+    
+    assert!(actual_buffer >= expected_buffer - ether(1), "Buffer too low");
+}
+
+#[test]
+fn test_small_stake_no_delegation() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake amount that's below dust threshold after buffer calculation
+    let small_amount = ether(1); // 1 STRK
+    
+    strk_token.approve(sp_stark.contract_address, small_amount);
+    sp_stark.stake(small_amount, small_amount);
+    
+    // Should not delegate (amount to delegate < 0.01 STRK dust threshold)
+    // All should remain in contract
+    let balance = strk_token.balance_of(sp_stark.contract_address);
+    assert_eq!(balance, small_amount);
+}
+
+#[test]
+#[should_panic(expected: ('Caller is not the owner',))]
+fn test_claim_validator_rewards_only_owner() {
+    let (sp_stark, _) = init();
+    
+    let fake_owner: ContractAddress = 1.try_into().unwrap();
+    cheat_caller_address(sp_stark.contract_address, fake_owner, CheatSpan::TargetCalls(1));
+    sp_stark.claim_validator_rewards();
+}
+
+#[test]
+#[should_panic(expected: ('No rewards to claim',))]
+fn test_claim_validator_rewards_no_rewards() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake first to have delegation
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    // Try to claim rewards (mock validator has 0 rewards by default)
+    sp_stark.claim_validator_rewards();
+}
+
+#[test]
+#[should_panic(expected: ('Validator not set',))]
+fn test_claim_validator_rewards_no_validator() {
+    // Create contract with zero validator address
+    let owner = get_contract_address();
+    let strk_token = deploy_mock_token(owner);
+    let zero_validator: ContractAddress = 0.try_into().unwrap();
+    
+    let sp_strk = deploy_contract(
+        InitParams {
+            owner,
+            strk_token: strk_token.contract_address,
+            validator_pool: zero_validator,
+            dao_fee_basis_points: 500,
+            dev_fee_basis_points: 300,
+            min_stake_amount: 10000000000000000,
+            unlock_period: 60,
+            claim_window: 604800,
+        },
+    );
+    
+    sp_strk.claim_validator_rewards();
+}
+
+#[test]
+#[should_panic(expected: ('Caller is not the owner',))]
+fn test_unstake_from_validator_only_owner() {
+    let (sp_stark, _) = init();
+    
+    let fake_owner: ContractAddress = 1.try_into().unwrap();
+    cheat_caller_address(sp_stark.contract_address, fake_owner, CheatSpan::TargetCalls(1));
+    sp_stark.unstake_from_validator(ether(1));
+}
+
+#[test]
+#[should_panic(expected: ('Invalid amount',))]
+fn test_unstake_from_validator_zero_amount() {
+    let (sp_stark, _) = init();
+    sp_stark.unstake_from_validator(0);
+}
+
+#[test]
+#[should_panic(expected: ('Insufficient delegated amount',))]
+fn test_unstake_from_validator_insufficient() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake to have some delegation
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    // Try to unstake more than delegated
+    // ~90 STRK is delegated, try to unstake 200
+    sp_stark.unstake_from_validator(ether(200));
+}
+
+#[test]
+#[should_panic(expected: ('Validator not set',))]
+fn test_unstake_from_validator_no_validator() {
+    let owner = get_contract_address();
+    let strk_token = deploy_mock_token(owner);
+    let zero_validator: ContractAddress = 0.try_into().unwrap();
+    
+    let sp_strk = deploy_contract(
+        InitParams {
+            owner,
+            strk_token: strk_token.contract_address,
+            validator_pool: zero_validator,
+            dao_fee_basis_points: 500,
+            dev_fee_basis_points: 300,
+            min_stake_amount: 10000000000000000,
+            unlock_period: 60,
+            claim_window: 604800,
+        },
+    );
+    
+    sp_strk.unstake_from_validator(ether(1));
+}
+
+#[test]
+fn test_unstake_from_validator_success() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake to have delegation
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    // Unstake from validator (should succeed)
+    sp_stark.unstake_from_validator(ether(50));
+    
+    // Can't test much more with mock, but function should complete
+}
+
+#[test]
+#[should_panic(expected: ('Unbonding already pending',))]
+fn test_unstake_from_validator_already_pending() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    // Start unbonding
+    sp_stark.unstake_from_validator(ether(30));
+    
+    // Try to start another unbonding (should fail)
+    sp_stark.unstake_from_validator(ether(20));
+}
+
+#[test]
+#[should_panic(expected: ('Caller is not the owner',))]
+fn test_complete_validator_unstaking_only_owner() {
+    let (sp_stark, _) = init();
+    
+    let fake_owner: ContractAddress = 1.try_into().unwrap();
+    cheat_caller_address(sp_stark.contract_address, fake_owner, CheatSpan::TargetCalls(1));
+    sp_stark.complete_validator_unstaking();
+}
+
+#[test]
+#[should_panic(expected: ('No pending unbonding',))]
+fn test_complete_validator_unstaking_no_pending() {
+    let (sp_stark, _) = init();
+    
+    // Try to complete without starting unbonding
+    sp_stark.complete_validator_unstaking();
+}
+
+#[test]
+#[should_panic(expected: ('Unbonding period not finished',))]
+fn test_complete_validator_unstaking_too_early() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake and start unbonding
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    sp_stark.unstake_from_validator(ether(50));
+    
+    // Try to complete immediately (should fail - needs 7 days)
+    sp_stark.complete_validator_unstaking();
+}
+
+#[test]
+fn test_complete_validator_unstaking_success() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake and start unbonding
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    let timestamp: u64 = 1000000;
+    start_cheat_block_timestamp(sp_stark.contract_address, timestamp);
+    
+    sp_stark.unstake_from_validator(ether(50));
+    
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+    
+    // Fast forward 7 days
+    let seven_days: u64 = 7 * 24 * 60 * 60;
+    start_cheat_block_timestamp(sp_stark.contract_address, timestamp + seven_days + 1);
+    
+    // Complete unbonding (should succeed)
+    sp_stark.complete_validator_unstaking();
+    
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+    
+    // Should be able to start new unbonding now
+    sp_stark.unstake_from_validator(ether(20));
+}
+
+#[test]
+fn test_validator_full_flow() {
+    let (sp_stark, strk_token) = init();
+    let user = get_contract_address();
+    
+    // Step 1: User stakes (triggers delegation)
+    let stake_amount = ether(100);
+    strk_token.approve(sp_stark.contract_address, stake_amount);
+    sp_stark.stake(stake_amount, stake_amount);
+    
+    // Verify user got spSTRK
+    let sp_strk_token = erc20(sp_stark.contract_address);
+    assert_eq!(sp_strk_token.balance_of(user), stake_amount);
+    
+    // Step 2: Admin unstakes from validator
+    let unstake_amount = ether(40);
+    let timestamp: u64 = 2000000;
+    start_cheat_block_timestamp(sp_stark.contract_address, timestamp);
+    
+    sp_stark.unstake_from_validator(unstake_amount);
+    
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+    
+    // Step 3: Wait 7 days and complete unbonding
+    let seven_days: u64 = 7 * 24 * 60 * 60;
+    start_cheat_block_timestamp(sp_stark.contract_address, timestamp + seven_days + 1);
+    
+    let balance_before = strk_token.balance_of(sp_stark.contract_address);
+    sp_stark.complete_validator_unstaking();
+    let balance_after = strk_token.balance_of(sp_stark.contract_address);
+    
+    // Balance should increase (mock returns 100)
+    assert!(balance_after >= balance_before, "Balance should increase");
+    
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+}
+
+#[test]
+fn test_no_delegation_when_validator_not_set() {
+    let owner = get_contract_address();
+    let strk_token = deploy_mock_token(owner);
+    let zero_validator: ContractAddress = 0.try_into().unwrap();
+    
+    let sp_strk = deploy_contract(
+        InitParams {
+            owner,
+            strk_token: strk_token.contract_address,
+            validator_pool: zero_validator,
+            dao_fee_basis_points: 500,
+            dev_fee_basis_points: 300,
+            min_stake_amount: 10000000000000000,
+            unlock_period: 60,
+            claim_window: 604800,
+        },
+    );
+    
+    // Stake should work even without validator
+    let stake_amount = ether(100);
+    strk_token.approve(sp_strk.contract_address, stake_amount);
+    sp_strk.stake(stake_amount, stake_amount);
+    
+    // All funds should remain in contract (no delegation)
+    let balance = strk_token.balance_of(sp_strk.contract_address);
+    assert_eq!(balance, stake_amount);
+}
+
+#[test]
+fn test_buffer_maintained_across_multiple_operations() {
+    let (sp_stark, strk_token) = init();
+    
+    // Stake multiple times
+    strk_token.approve(sp_stark.contract_address, ether(50));
+    sp_stark.stake(ether(50), ether(50));
+    
+    strk_token.approve(sp_stark.contract_address, ether(50));
+    sp_stark.stake(ether(50), ether(50));
+    
+    strk_token.approve(sp_stark.contract_address, ether(100));
+    sp_stark.stake(ether(100), ether(100));
+    
+    // Total staked: 200 STRK
+    // Expected buffer: ~20 STRK (10%)
+    let total_staked = ether(200);
+    let expected_buffer = (total_staked * 10) / 100;
+    let actual_buffer = strk_token.balance_of(sp_stark.contract_address);
+    
+    assert!(actual_buffer >= expected_buffer - ether(2), "Buffer too low");
+    assert!(actual_buffer <= total_staked, "All funds in contract");
 }

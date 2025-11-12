@@ -11,6 +11,8 @@ pub mod NewspSTRK {
     use openzeppelin::access::ownable::OwnableComponent;
     use openzeppelin::upgrades::UpgradeableComponent;
     use openzeppelin::upgrades::interface::IUpgradeable;
+    use openzeppelin::security::pausable::PausableComponent;
+    use openzeppelin::security::reentrancyguard::ReentrancyGuardComponent;
 
     use sp_strk::interfaces::sp_strk::{UnlockRequest};
     use sp_strk::types::init::InitParams;
@@ -19,6 +21,10 @@ pub mod NewspSTRK {
     component!(path: ERC20Component, storage: erc20, event: ERC20Event);
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: UpgradeableComponent, storage: upgradeable, event: UpgradeableEvent);
+    component!(path: PausableComponent, storage: pausable, event: PausableEvent);
+    component!(
+        path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent,
+    );
 
     // ERC20 Mixin
     #[abi(embed_v0)]
@@ -34,25 +40,45 @@ pub mod NewspSTRK {
     // Upgradeable
     impl UpgradeableInternalImpl = UpgradeableComponent::InternalImpl<ContractState>;
 
+    // Pausable
+    #[abi(embed_v0)]
+    impl PausableImpl = PausableComponent::PausableImpl<ContractState>;
+    impl PausableInternalImpl = PausableComponent::InternalImpl<ContractState>;
+
+    // ReentrancyGuard
+    impl ReentrancyGuardInternalImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
 
     #[storage]
     struct Storage {
-        total_pooled_STRK: u256,
-        dao_fee_basis_points: u16,
-        dev_fee_basis_points: u16,
+        // IMPORTANT: Must match main contract storage layout
+        strk_token: ContractAddress,
+        unlock_requests: Map<(ContractAddress, u256), UnlockRequest>,
+        unlock_request_count: Map<ContractAddress, u256>,
         accumulated_dao_fees: u256,
         accumulated_dev_fees: u256,
         min_stake_amount: u256,
-        unlock_period: u64,
+        total_pooled_STRK: u256,
         claim_window: u64,
-        unlock_requests: Map<ContractAddress, UnlockRequest>,
-        strk_token: ContractAddress,
+        unlock_period: u64,
+        dao_fee_basis_points: u16,
+        dev_fee_basis_points: u16,
+        total_locked_in_unlocks: u256,
+        // ========== ADD THESE NEW VALIDATOR FIELDS ==========
+        validator_pool: ContractAddress,
+        total_delegated_to_validator: u256,
+        pending_validator_unbonding: u256,
+        validator_unbond_time: u64,
+        // ====================================================
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
         ownable: OwnableComponent::Storage,
         #[substorage(v0)]
         upgradeable: UpgradeableComponent::Storage,
+        #[substorage(v0)]
+        pausable: PausableComponent::Storage,
+        #[substorage(v0)]
+        reentrancy_guard: ReentrancyGuardComponent::Storage,
     }
 
     #[event]
@@ -64,6 +90,10 @@ pub mod NewspSTRK {
         OwnableEvent: OwnableComponent::Event,
         #[flat]
         UpgradeableEvent: UpgradeableComponent::Event,
+        #[flat]
+        PausableEvent: PausableComponent::Event,
+        #[flat]
+        ReentrancyGuardEvent: ReentrancyGuardComponent::Event,
     }
 
     #[constructor]
@@ -78,7 +108,6 @@ pub mod NewspSTRK {
     // ====================================
     // Upgradeable Implementation
     // ====================================
-
     #[abi(embed_v0)]
     impl UpgradeableImpl of IUpgradeable<ContractState> {
         fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
