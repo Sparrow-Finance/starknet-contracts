@@ -1,5 +1,6 @@
 use starknet::ContractAddress;
-use openzeppelin::token::erc20::{ERC20ABIDispatcher};
+use openzeppelin_interfaces::erc20::{IERC20Dispatcher};
+use openzeppelin_interfaces::erc721::{IERC721Dispatcher};
 
 // Serialize data to felt252 array
 pub fn serialize<T, +Serde<T>>(t: @T) -> Array<felt252> {
@@ -18,7 +19,12 @@ pub fn ether(amount: u256) -> u256 {
     amount * 1_000_000_000_000_000_000
 }
 
-// Create ERC20ABIDispatcher from given address
-pub fn erc20(address: ContractAddress) -> ERC20ABIDispatcher {
-    ERC20ABIDispatcher { contract_address: address }
+// Create IERC20Dispatcher from given address
+pub fn erc20(address: ContractAddress) -> IERC20Dispatcher {
+    IERC20Dispatcher { contract_address: address }
+}
+
+// Create IERC721Dispatcher from given address
+pub fn erc721(address: ContractAddress) -> IERC721Dispatcher {
+    IERC721Dispatcher { contract_address: address }
 }

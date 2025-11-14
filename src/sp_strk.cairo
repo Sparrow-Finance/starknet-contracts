@@ -1,18 +1,25 @@
 #[starknet::contract]
 pub mod spSTRK {
     use core::num::traits::Zero;
-    use openzeppelin::access::ownable::OwnableComponent;
-    use openzeppelin::security::pausable::PausableComponent;
-    use openzeppelin::security::reentrancyguard::ReentrancyGuardComponent;
-    use openzeppelin::token::erc20::{
-        ERC20ABIDispatcher, ERC20ABIDispatcherTrait, ERC20Component, ERC20HooksEmptyImpl,
+    use openzeppelin_access::ownable::OwnableComponent;
+    use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
+    use openzeppelin_interfaces::erc721::{IERC721Dispatcher, IERC721DispatcherTrait};
+    use openzeppelin_interfaces::upgrades::IUpgradeable;
+    use openzeppelin_security::pausable::PausableComponent;
+    use openzeppelin_security::reentrancyguard::ReentrancyGuardComponent;
+    use openzeppelin_token::erc20::extensions::erc4626::{
+        DefaultConfig, ERC4626Component, ERC4626DefaultNoFees, ERC4626DefaultNoLimits,
+        ERC4626EmptyHooks, ERC4626SelfAssetsManagement,
     };
-    use openzeppelin::upgrades::UpgradeableComponent;
-    use openzeppelin::upgrades::interface::IUpgradeable;
+    use openzeppelin_token::erc20::{ERC20Component, ERC20HooksEmptyImpl};
+    use openzeppelin_upgrades::UpgradeableComponent;
     use sp_strk::components::constants::Constants;
     use sp_strk::interfaces::sp_strk::{Errors, IspSTRK, UnlockRequest};
     use sp_strk::interfaces::validator_pool::{
         IValidatorPoolDispatcher, IValidatorPoolDispatcherTrait,
+    };
+    use sp_strk::interfaces::withdrawal_queue::{
+        IWithdrawalQueueNFTDispatcher, IWithdrawalQueueNFTDispatcherTrait,
     };
     use sp_strk::types::init::InitParams;
     use starknet::event::EventEmitter;
@@ -27,6 +34,7 @@ pub mod spSTRK {
     // OpenZeppelin components and their implementations
     // ====================================
     component!(path: ERC20Component, storage: erc20, event: ERC20Event);
+    component!(path: ERC4626Component, storage: erc4626, event: ERC4626Event);
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: UpgradeableComponent, storage: upgradeable, event: UpgradeableEvent);
     component!(path: PausableComponent, storage: pausable, event: PausableEvent);
@@ -34,10 +42,39 @@ pub mod spSTRK {
         path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent,
     );
 
+    // ====================================
+    // ERC20 Configuration - REQUIRED
+    // ====================================
+    impl ERC20ImmutableConfigImpl of ERC20Component::ImmutableConfig {
+        const DECIMALS: u8 = 18;
+    }
+    impl ERC20HooksImpl = ERC20HooksEmptyImpl<ContractState>; // <-- FIX THIS LINE
+
+    // ====================================
+    // Component Implementations
+    // ====================================
+
     // ERC20 Mixin
     #[abi(embed_v0)]
     impl ERC20MixinImpl = ERC20Component::ERC20MixinImpl<ContractState>;
     impl ERC20InternalImpl = ERC20Component::InternalImpl<ContractState>;
+
+    // ERC4626
+    // ERC4626 - EXPOSED
+    // ERC4626
+    impl ERC4626Impl = ERC4626Component::ERC4626Impl<ContractState>;
+    impl ERC4626InternalImpl = ERC4626Component::InternalImpl<ContractState>;
+
+    // ERC4626 Config
+    impl ERC4626ImmutableConfig = openzeppelin_token::erc20::extensions::erc4626::DefaultConfig;
+    impl ERC4626HooksImpl =
+        openzeppelin_token::erc20::extensions::erc4626::ERC4626EmptyHooks<ContractState>;
+    impl ERC4626FeeConfigImpl =
+        openzeppelin_token::erc20::extensions::erc4626::ERC4626DefaultNoFees<ContractState>;
+    impl ERC4626LimitConfigImpl =
+        openzeppelin_token::erc20::extensions::erc4626::ERC4626DefaultNoLimits<ContractState>;
+    impl ERC4626AssetsManagementImpl =
+        openzeppelin_token::erc20::extensions::erc4626::ERC4626SelfAssetsManagement<ContractState>;
 
     // Ownable Mixin
     #[abi(embed_v0)]
@@ -91,6 +128,7 @@ pub mod spSTRK {
         pending_validator_unbonding: u256,
         // Timestamp when unbonding completes
         validator_unbond_time: u64,
+        withdrawal_queue_nft: ContractAddress,
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -101,6 +139,8 @@ pub mod spSTRK {
         pausable: PausableComponent::Storage,
         #[substorage(v0)]
         reentrancy_guard: ReentrancyGuardComponent::Storage,
+        #[substorage(v0)]
+        erc4626: ERC4626Component::Storage,
     }
 
     // ====================================
@@ -277,6 +317,7 @@ pub mod spSTRK {
         PausableEvent: PausableComponent::Event,
         #[flat]
         ReentrancyGuardEvent: ReentrancyGuardComponent::Event,
+        ERC4626Event: ERC4626Component::Event,
     }
 
     // ====================================
@@ -289,11 +330,14 @@ pub mod spSTRK {
 
         // Initialize ERC20
         self.erc20.initializer("Sparrow Staked STRK", "spSTRK");
+        self.erc4626.initializer(params.strk_token);
 
         // Initialize Config params
         self.strk_token.write(params.strk_token);
         //validaot pool initialization
         self.validator_pool.write(params.validator_pool);
+
+        self.withdrawal_queue_nft.write(params.withdrawal_queue_nft);
 
         self._set_fees(params.dao_fee_basis_points, params.dev_fee_basis_points);
         self._set_min_stake_amount(params.min_stake_amount);
@@ -322,6 +366,117 @@ pub mod spSTRK {
     // ====================================
     #[abi(embed_v0)]
     impl spSTRKImpl of IspSTRK<ContractState> {
+        // ========== ERC4626 Standard Functions ==========
+
+        // Metadata
+        fn asset(self: @ContractState) -> ContractAddress {
+            self.erc4626.asset()
+        }
+
+        fn total_assets(self: @ContractState) -> u256 {
+            self.erc4626.total_assets()
+        }
+
+        // Conversions
+        fn convert_to_shares(self: @ContractState, assets: u256) -> u256 {
+            self.erc4626.convert_to_shares(assets)
+        }
+
+        fn convert_to_assets(self: @ContractState, shares: u256) -> u256 {
+            self.erc4626.convert_to_assets(shares)
+        }
+
+        // Deposit functions - use standard implementation
+        fn max_deposit(self: @ContractState, receiver: ContractAddress) -> u256 {
+            self.erc4626.max_deposit(receiver)
+        }
+
+        fn preview_deposit(self: @ContractState, assets: u256) -> u256 {
+            self.erc4626.preview_deposit(assets)
+        }
+
+        fn deposit(ref self: ContractState, assets: u256, receiver: ContractAddress) -> u256 {
+            self.pausable.assert_not_paused();
+            self.erc4626.deposit(assets, receiver)
+        }
+
+        fn max_mint(self: @ContractState, receiver: ContractAddress) -> u256 {
+            self.erc4626.max_mint(receiver)
+        }
+
+        fn preview_mint(self: @ContractState, shares: u256) -> u256 {
+            self.erc4626.preview_mint(shares)
+        }
+
+        fn mint(ref self: ContractState, shares: u256, receiver: ContractAddress) -> u256 {
+            self.pausable.assert_not_paused();
+            self.erc4626.mint(shares, receiver)
+        }
+
+        // Withdraw functions - REDIRECT to NFT system
+        fn max_withdraw(self: @ContractState, owner: ContractAddress) -> u256 {
+            // Return owner's balance converted to assets
+            let shares = self.erc20.balance_of(owner);
+            self.erc4626.convert_to_assets(shares)
+        }
+
+        fn preview_withdraw(self: @ContractState, assets: u256) -> u256 {
+            self.erc4626.preview_withdraw(assets)
+        }
+
+        fn withdraw(
+            ref self: ContractState,
+            assets: u256,
+            receiver: ContractAddress,
+            owner: ContractAddress,
+        ) -> u256 {
+            self.pausable.assert_not_paused();
+
+            // Convert assets to shares
+            let shares = self.erc4626.convert_to_shares(assets);
+
+            // Redirect to NFT-based unlock system
+            // User must be the owner or have approval
+            let caller = get_caller_address();
+            assert(caller == owner, 'Not owner');
+
+            // Request unlock returns NFT token_id
+            let _token_id = self.request_unlock(shares, assets);
+
+            // Return shares as per ERC4626 spec
+            shares
+        }
+
+        fn max_redeem(self: @ContractState, owner: ContractAddress) -> u256 {
+            self.erc4626.max_redeem(owner)
+        }
+
+        fn preview_redeem(self: @ContractState, shares: u256) -> u256 {
+            self.erc4626.preview_redeem(shares)
+        }
+
+        fn redeem(
+            ref self: ContractState,
+            shares: u256,
+            receiver: ContractAddress,
+            owner: ContractAddress,
+        ) -> u256 {
+            self.pausable.assert_not_paused();
+
+            // Convert shares to assets
+            let assets = self.erc4626.convert_to_assets(shares);
+
+            // Redirect to NFT-based unlock system
+            let caller = get_caller_address();
+            assert(caller == owner, 'Not owner');
+
+            // Request unlock returns NFT token_id
+            let _token_id = self.request_unlock(shares, assets);
+
+            // Return assets as per ERC4626 spec
+            assets
+        }
+
         /// Stake STRK tokens and receive spSTRK tokens
         /// # Arguments
         /// * `strk_amount` - The amount of STRK tokens to stake
@@ -420,6 +575,15 @@ pub mod spSTRK {
 
             self.unlock_request_count.entry(user).write(request_count + 1);
 
+            // ALSO mint NFT
+            let nft = IWithdrawalQueueNFTDispatcher {
+                contract_address: self.withdrawal_queue_nft.read(),
+            };
+            let _nft_token_id = nft
+                .mint_request(
+                    user, UnlockRequest { sp_strk_amount, strk_amount, unlock_time, expiry_time },
+                );
+
             self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() + strk_amount);
 
             // Emit UnlockRequested event
@@ -506,6 +670,55 @@ pub mod spSTRK {
             self.emit(Unstaked { user, strk_amount, sp_strk_amount: request.sp_strk_amount });
 
             // End reentrancy guard
+            self.reentrancy_guard.end();
+        }
+
+        fn claim_unlock_with_nft(ref self: ContractState, token_id: u256) {
+            self.pausable.assert_not_paused();
+            self.reentrancy_guard.start();
+
+            let caller = get_caller_address();
+            let nft_address = self.withdrawal_queue_nft.read();
+
+            // Use custom interface for withdrawal-specific functions
+            let nft = IWithdrawalQueueNFTDispatcher { contract_address: nft_address };
+
+            // Use ERC721 interface for standard NFT functions
+            let erc721 = IERC721Dispatcher { contract_address: nft_address };
+
+            // Verify NFT is claimable
+            assert(nft.is_claimable(token_id), 'Not claimable');
+
+            // Verify caller owns the NFT
+            let nft_owner = erc721.owner_of(token_id);
+            assert(caller == nft_owner, 'Not NFT owner');
+
+            // Get request data from NFT
+            let request = nft.get_request(token_id);
+
+            let strk_amount = request.strk_amount;
+            let sp_strk_amount = request.sp_strk_amount;
+
+            // Validate
+            assert(strk_amount > 0, Errors::INVALID_STRK_AMOUNT);
+            assert(
+                self._strk_balance_of(get_contract_address()) >= strk_amount,
+                Errors::INSUFFICIENT_STARK,
+            );
+
+            // Update state
+            self.total_pooled_STRK.write(self.total_pooled_STRK.read() - strk_amount);
+            self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() - strk_amount);
+
+            // Burn spSTRK and transfer STRK
+            self.erc20.burn(get_contract_address(), sp_strk_amount);
+            self._strk_transfer(get_contract_address(), caller, strk_amount);
+
+            // Burn NFT
+            nft.burn_request(token_id);
+
+            self.emit(Unstaked { user: caller, strk_amount, sp_strk_amount });
+
             self.reentrancy_guard.end();
         }
 
@@ -745,7 +958,7 @@ pub mod spSTRK {
         /// Deposit STRK tokens into the contract
         /// # Arguments
         /// * `strk_amount` - The amount of STRK tokens to deposit
-        fn deposit(ref self: ContractState, strk_amount: u256) {
+        fn admin_deposit(ref self: ContractState, strk_amount: u256) {
             // Only owner can deposit
             self.ownable.assert_only_owner();
 
@@ -759,7 +972,7 @@ pub mod spSTRK {
         /// Withdraw STRK tokens from the contract
         /// # Arguments
         /// * `strk_amount` - The amount of STRK tokens to withdraw
-        fn withdraw(ref self: ContractState, strk_amount: u256) {
+        fn admin_withdraw(ref self: ContractState, strk_amount: u256) {
             self.ownable.assert_only_owner();
             self.reentrancy_guard.start();
 
@@ -950,6 +1163,11 @@ pub mod spSTRK {
             self.pausable.unpause();
         }
 
+        fn set_withdrawal_queue_nft(ref self: ContractState, nft_address: ContractAddress) {
+            self.ownable.assert_only_owner();
+            self.withdrawal_queue_nft.write(nft_address);
+        }
+
         /// Claim rewards from validator
         /// # Access Control
         /// Only the contract owner can call this function
@@ -1062,8 +1280,8 @@ pub mod spSTRK {
     #[generate_trait]
     impl Internal of InternalTrait {
         /// Helper to get STRK token dispatcher
-        fn _strk_dispatcher(self: @ContractState) -> ERC20ABIDispatcher {
-            ERC20ABIDispatcher { contract_address: self.strk_token.read() }
+        fn _strk_dispatcher(self: @ContractState) -> IERC20Dispatcher {
+            IERC20Dispatcher { contract_address: self.strk_token.read() }
         }
 
         /// Helper to transfer STRK tokens
@@ -1071,8 +1289,12 @@ pub mod spSTRK {
         /// * `payer` - The address paying the STRK tokens
         /// * `recipient` - The address receiving the STRK tokens
         /// * `amount` - The amount of STRK tokens to transfer
+        /// Transfer STRK tokens
         fn _strk_transfer(
-            self: @ContractState, payer: ContractAddress, recipient: ContractAddress, amount: u256,
+            ref self: ContractState,
+            payer: ContractAddress,
+            recipient: ContractAddress,
+            amount: u256,
         ) {
             let token = self._strk_dispatcher();
 
@@ -1083,10 +1305,9 @@ pub mod spSTRK {
                 transfer_success = token.transfer(recipient, amount);
             } else {
                 // Otherwise, use transferFrom
-                transfer_success = token.transferFrom(payer, recipient, amount);
+                transfer_success = token.transfer_from(payer, recipient, amount);
             }
 
-            // Ensure transfer was successful
             assert(transfer_success, Errors::TRANSFER_FAILED);
         }
 

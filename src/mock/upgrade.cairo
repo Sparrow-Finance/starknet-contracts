@@ -6,15 +6,15 @@ pub trait INewspSTRK<TContractState> {
 #[starknet::contract]
 pub mod NewspSTRK {
     use starknet::{ContractAddress, ClassHash};
-    use starknet::storage::{Map};
-    use openzeppelin::token::erc20::{ERC20Component, ERC20HooksEmptyImpl};
-    use openzeppelin::access::ownable::OwnableComponent;
-    use openzeppelin::upgrades::UpgradeableComponent;
-    use openzeppelin::upgrades::interface::IUpgradeable;
-    use openzeppelin::security::pausable::PausableComponent;
-    use openzeppelin::security::reentrancyguard::ReentrancyGuardComponent;
+    use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess};
+    use openzeppelin_token::erc20::ERC20Component;
+    use openzeppelin_access::ownable::OwnableComponent;
+    use openzeppelin_upgrades::UpgradeableComponent;
+    use openzeppelin_interfaces::upgrades::IUpgradeable;
+    use openzeppelin_security::pausable::PausableComponent;
+    use openzeppelin_security::reentrancyguard::ReentrancyGuardComponent;
 
-    use sp_strk::interfaces::sp_strk::{UnlockRequest};
+    use sp_strk::interfaces::sp_strk::UnlockRequest;
     use sp_strk::types::init::InitParams;
     use super::INewspSTRK;
 
@@ -22,19 +22,18 @@ pub mod NewspSTRK {
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: UpgradeableComponent, storage: upgradeable, event: UpgradeableEvent);
     component!(path: PausableComponent, storage: pausable, event: PausableEvent);
-    component!(
-        path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent,
-    );
+    component!(path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent);
 
-    // ERC20 Mixin
+    // ERC20
     #[abi(embed_v0)]
     impl ERC20MixinImpl = ERC20Component::ERC20MixinImpl<ContractState>;
     impl ERC20InternalImpl = ERC20Component::InternalImpl<ContractState>;
+    impl DefaultConfig = openzeppelin_token::erc20::erc20::DefaultConfig;
+    impl ERC20HooksImpl = openzeppelin_token::erc20::erc20::ERC20HooksEmptyImpl<ContractState>;
 
-    // Ownable Mixin
+    // Ownable
     #[abi(embed_v0)]
-    impl OwnableTwoStepMixinImpl =
-        OwnableComponent::OwnableTwoStepMixinImpl<ContractState>;
+    impl OwnableMixinImpl = OwnableComponent::OwnableMixinImpl<ContractState>;
     impl OwnableInternalImpl = OwnableComponent::InternalImpl<ContractState>;
 
     // Upgradeable
@@ -50,7 +49,6 @@ pub mod NewspSTRK {
 
     #[storage]
     struct Storage {
-        // IMPORTANT: Must match main contract storage layout
         strk_token: ContractAddress,
         unlock_requests: Map<(ContractAddress, u256), UnlockRequest>,
         unlock_request_count: Map<ContractAddress, u256>,
@@ -63,12 +61,11 @@ pub mod NewspSTRK {
         dao_fee_basis_points: u16,
         dev_fee_basis_points: u16,
         total_locked_in_unlocks: u256,
-        // ========== ADD THESE NEW VALIDATOR FIELDS ==========
         validator_pool: ContractAddress,
         total_delegated_to_validator: u256,
         pending_validator_unbonding: u256,
         validator_unbond_time: u64,
-        // ====================================================
+        withdrawal_queue_nft: ContractAddress,
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -98,16 +95,19 @@ pub mod NewspSTRK {
 
     #[constructor]
     fn constructor(ref self: ContractState, params: InitParams) {
-        // Initialize Ownable
         self.ownable.initializer(params.owner);
-
-        // Initialize ERC20
         self.erc20.initializer("Sparrow Staked STRK", "spSTRK");
+        
+        self.strk_token.write(params.strk_token);
+        self.validator_pool.write(params.validator_pool);
+        self.withdrawal_queue_nft.write(params.withdrawal_queue_nft);
+        self.dao_fee_basis_points.write(params.dao_fee_basis_points);
+        self.dev_fee_basis_points.write(params.dev_fee_basis_points);
+        self.min_stake_amount.write(params.min_stake_amount);
+        self.unlock_period.write(params.unlock_period);
+        self.claim_window.write(params.claim_window);
     }
 
-    // ====================================
-    // Upgradeable Implementation
-    // ====================================
     #[abi(embed_v0)]
     impl UpgradeableImpl of IUpgradeable<ContractState> {
         fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {

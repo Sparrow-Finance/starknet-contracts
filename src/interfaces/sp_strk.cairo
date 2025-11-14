@@ -1,4 +1,5 @@
 use starknet::ContractAddress;
+use openzeppelin_interfaces::erc4626::IERC4626;
 
 // Structure to hold unlock request details
 #[derive(Copy, Drop, Serde, PartialEq, Debug, starknet::Store)]
@@ -19,6 +20,42 @@ pub trait IspSTRK<TContractState> {
     // User functions
     // ====================================
 
+    // ERC4626 - Asset info
+    fn asset(self: @TContractState) -> ContractAddress;
+    fn total_assets(self: @TContractState) -> u256;
+    
+    // ERC4626 - Conversions
+    fn convert_to_shares(self: @TContractState, assets: u256) -> u256;
+    fn convert_to_assets(self: @TContractState, shares: u256) -> u256;
+    
+    // ERC4626 - Deposit
+    fn max_deposit(self: @TContractState, receiver: ContractAddress) -> u256;
+    fn preview_deposit(self: @TContractState, assets: u256) -> u256;
+    fn deposit(ref self: TContractState, assets: u256, receiver: ContractAddress) -> u256;
+    
+    fn max_mint(self: @TContractState, receiver: ContractAddress) -> u256;
+    fn preview_mint(self: @TContractState, shares: u256) -> u256;
+    fn mint(ref self: TContractState, shares: u256, receiver: ContractAddress) -> u256;
+    
+    // ERC4626 - Withdraw (redirected to NFT system)
+    fn max_withdraw(self: @TContractState, owner: ContractAddress) -> u256;
+    fn preview_withdraw(self: @TContractState, assets: u256) -> u256;
+    fn withdraw(
+        ref self: TContractState,
+        assets: u256,
+        receiver: ContractAddress,
+        owner: ContractAddress,
+    ) -> u256;
+    
+    fn max_redeem(self: @TContractState, owner: ContractAddress) -> u256;
+    fn preview_redeem(self: @TContractState, shares: u256) -> u256;
+    fn redeem(
+        ref self: TContractState,
+        shares: u256,
+        receiver: ContractAddress,
+        owner: ContractAddress,
+    ) -> u256;
+
     ///  Stake STRK tokens to receive spSTRK shares
     fn stake(ref self: TContractState, strk_amount: u256, min_sp_strk_out: u256) -> u256;
     ///  Request to unlock spSTRK shares for STRK tokens
@@ -27,6 +64,8 @@ pub trait IspSTRK<TContractState> {
     fn claim_unlock(ref self: TContractState, request_index: u256);
     ///  Cancel an existing unlock request
     fn cancel_unlock(ref self: TContractState, request_index: u256);
+
+    fn claim_unlock_with_nft(ref self: TContractState, token_id: u256);
 
     fn claim_expired(ref self: TContractState, request_index: u256);
 
@@ -52,9 +91,9 @@ pub trait IspSTRK<TContractState> {
     // ====================================
 
     /// Deposit STRK tokens
-    fn deposit(ref self: TContractState, strk_amount: u256);
+    fn admin_deposit(ref self: TContractState, strk_amount: u256);
     /// Withdraw STRK tokens
-    fn withdraw(ref self: TContractState, strk_amount: u256);
+    fn admin_withdraw(ref self: TContractState, strk_amount: u256);
     /// Add rewards to the staking pool
     fn add_rewards(ref self: TContractState, strk_amount: u256);
 
@@ -75,6 +114,8 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
+
+    fn set_withdrawal_queue_nft(ref self: TContractState, nft_address: ContractAddress);
 
     /// Claim rewards from validator
     fn claim_validator_rewards(ref self: TContractState);
