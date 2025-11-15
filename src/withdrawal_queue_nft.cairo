@@ -110,5 +110,11 @@ use openzeppelin_token::erc721::ERC721Component;
             let now = get_block_timestamp();
             now >= request.unlock_time && now < request.expiry_time
         }
+
+        fn is_expired(self: @ContractState, token_id: u256) -> bool {
+        let request = self.requests.entry(token_id).read();
+        let now = get_block_timestamp();
+        now >= request.expiry_time
+    }
     }
 }

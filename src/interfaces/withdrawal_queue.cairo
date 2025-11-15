@@ -15,4 +15,5 @@ pub trait IWithdrawalQueueNFT<TContractState> {
     
     fn get_request(self: @TContractState, token_id: u256) -> UnlockRequest;
     fn is_claimable(self: @TContractState, token_id: u256) -> bool;
+    fn is_expired(self: @TContractState, token_id: u256) -> bool;
 }

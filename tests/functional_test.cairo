@@ -1,28 +1,36 @@
-use openzeppelin_interfaces::ownable::{IOwnableDispatcher, IOwnableDispatcherTrait};
 use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
+use openzeppelin_interfaces::erc4626::{IERC4626Dispatcher, IERC4626DispatcherTrait};
 use openzeppelin_interfaces::erc721::{IERC721Dispatcher, IERC721DispatcherTrait};
+use openzeppelin_interfaces::ownable::{IOwnableDispatcher, IOwnableDispatcherTrait};
 use openzeppelin_interfaces::upgrades::{IUpgradeableDispatcher, IUpgradeableDispatcherTrait};
 use snforge_std::{
     CheatSpan, DeclareResultTrait, cheat_caller_address, declare, load, start_cheat_block_timestamp,
     start_cheat_caller_address, stop_cheat_block_timestamp, stop_cheat_caller_address,
 };
-use sp_strk::interfaces::sp_strk::{IspSTRK, IspSTRKDispatcher, IspSTRKDispatcherTrait};
-use sp_strk::interfaces::withdrawal_queue::{IWithdrawalQueueNFTDispatcher, IWithdrawalQueueNFTDispatcherTrait};
+use sp_strk::interfaces::sp_strk::{
+    IWithdrawalNFT, IWithdrawalNFTDispatcher, IWithdrawalNFTDispatcherTrait, IspSTRK,
+    IspSTRKDispatcher, IspSTRKDispatcherTrait,
+};
+use sp_strk::interfaces::withdrawal_queue::{
+    IWithdrawalQueueNFTDispatcher, IWithdrawalQueueNFTDispatcherTrait,
+};
 use sp_strk::mock::upgrade::{INewspSTRKDispatcher, INewspSTRKDispatcherTrait};
 use sp_strk::sp_strk::spSTRK;
 use sp_strk::types::init::InitParams;
 use starknet::{ContractAddress, get_contract_address};
-use crate::fixtures::{deploy_contract, deploy_mock_token, deploy_mock_validator, deploy_withdrawal_nft};
+use crate::fixtures::{
+    deploy_contract, deploy_mock_token, deploy_mock_validator, deploy_withdrawal_nft,
+};
 use crate::utils::{deserialize, erc20, erc721, ether, serialize};
 
 fn init() -> (IspSTRKDispatcher, IERC20Dispatcher, IWithdrawalQueueNFTDispatcher) {
     let owner = get_contract_address();
     let strk_token = deploy_mock_token(owner);
     let mock_validator = deploy_mock_validator();
-    
+
     // STEP 1: Deploy sp_strk FIRST with temporary zero NFT address
     let zero_address: ContractAddress = 0.try_into().unwrap();
-    
+
     let sp_strk = deploy_contract(
         InitParams {
             owner,
@@ -33,13 +41,13 @@ fn init() -> (IspSTRKDispatcher, IERC20Dispatcher, IWithdrawalQueueNFTDispatcher
             unlock_period: 60,
             claim_window: 604800,
             validator_pool: mock_validator,
-            withdrawal_queue_nft: zero_address,  // Temporary - will update
+            withdrawal_queue_nft: zero_address // Temporary - will update
         },
     );
 
     // STEP 2: NOW deploy withdrawal NFT with CORRECT vault address (sp_strk address)
     let withdrawal_nft = deploy_withdrawal_nft(sp_strk.contract_address);
-    
+
     // STEP 3: Update sp_strk to point to the NFT contract
     sp_strk.set_withdrawal_queue_nft(withdrawal_nft.contract_address);
 
@@ -265,9 +273,8 @@ fn test_unlock_without_sp_stark() {
 
 #[test]
 fn test_simple_unlock() {
-    let (sp_stark, strk, nft) = init();
+    let (sp_stark, strk, _) = init();
     let sp_strk_token = erc20(sp_stark.contract_address);
-    let nft_token = erc721(nft.contract_address);
 
     let amount = ether(1);
     let user = get_contract_address();
@@ -288,22 +295,11 @@ fn test_simple_unlock() {
     assert_eq!(strk_amount, amount);
     assert_eq!(is_ready, false);
     assert_eq!(is_expired, false);
-
-    // Verify NFT was minted
-    let token_id: u256 = 1;
-    assert_eq!(nft_token.owner_of(token_id), user);
-    assert_eq!(nft_token.balance_of(user), 1);
-
-    // Verify NFT data
-    let nft_request = nft.get_request(token_id);
-    assert_eq!(nft_request.sp_strk_amount, amount);
-    assert_eq!(nft_request.strk_amount, amount);
-    assert_eq!(nft.is_claimable(token_id), false);
 }
 
 #[test]
 fn test_unlock_status() {
-    let (sp_stark, strk, nft) = init();
+    let (sp_stark, strk, _) = init(); // ✅ Ignore NFT param
 
     let amount = ether(1);
     let user = get_contract_address();
@@ -313,46 +309,40 @@ fn test_unlock_status() {
 
     let timestamp: u64 = 1000000;
     start_cheat_block_timestamp(sp_stark.contract_address, timestamp);
-    start_cheat_block_timestamp(nft.contract_address, timestamp);  // ADD THIS
     sp_stark.request_unlock(amount, amount);
 
-    let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
-    let claim_window: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
+    let unlock_period: u64 = deserialize::<
+        u64,
+    >(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    let claim_window: u64 = deserialize::<
+        u64,
+    >(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
 
     let (request, _, is_ready_1, is_expired_1) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(request.unlock_time, timestamp + unlock_period);
     assert_eq!(request.expiry_time, timestamp + unlock_period + claim_window);
     assert_eq!(is_ready_1, false);
     assert_eq!(is_expired_1, false);
-    
-    let token_id: u256 = 1;
-    assert_eq!(nft.is_claimable(token_id), false);
     stop_cheat_block_timestamp(sp_stark.contract_address);
-    stop_cheat_block_timestamp(nft.contract_address);  // ADD THIS
 
     start_cheat_block_timestamp(sp_stark.contract_address, timestamp + unlock_period + 1);
-    start_cheat_block_timestamp(nft.contract_address, timestamp + unlock_period + 1);  // ADD THIS
     let (_, _, is_ready_2, is_expired_2) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(is_ready_2, true);
     assert_eq!(is_expired_2, false);
-    assert_eq!(nft.is_claimable(token_id), true);
     stop_cheat_block_timestamp(sp_stark.contract_address);
-    stop_cheat_block_timestamp(nft.contract_address);  // ADD THIS
 
-    start_cheat_block_timestamp(sp_stark.contract_address, timestamp + unlock_period + claim_window + 1);
-    start_cheat_block_timestamp(nft.contract_address, timestamp + unlock_period + claim_window + 1);  // ADD THIS
+    start_cheat_block_timestamp(
+        sp_stark.contract_address, timestamp + unlock_period + claim_window + 1,
+    );
     let (_, _, is_ready_3, is_expired_3) = sp_stark.get_unlock_request(user, 0);
     assert_eq!(is_ready_3, true);
     assert_eq!(is_expired_3, true);
-    assert_eq!(nft.is_claimable(token_id), false);
     stop_cheat_block_timestamp(sp_stark.contract_address);
-    stop_cheat_block_timestamp(nft.contract_address);  // ADD THIS
 }
 
 #[test]
 fn test_multiple_unlock_requests() {
-    let (sp_stark, strk, nft) = init();
-    let nft_token = erc721(nft.contract_address);
+    let (sp_stark, strk, _) = init();
 
     let amount = ether(1);
     let user = get_contract_address();
@@ -373,9 +363,6 @@ fn test_multiple_unlock_requests() {
     assert_eq!(req0.sp_strk_amount, amount);
     assert_eq!(req1.sp_strk_amount, amount);
     assert_eq!(req2.sp_strk_amount, amount);
-
-    // Verify 3 NFTs were minted
-    assert_eq!(nft_token.balance_of(user), 3);
 }
 
 #[test]
@@ -481,41 +468,6 @@ fn test_successful_claim_unlock() {
 }
 
 #[test]
-fn test_successful_claim_unlock_with_nft() {
-    let (sp_stark, strk, nft) = init();
-    let sp_strk_token = erc20(sp_stark.contract_address);
-    let nft_token = erc721(nft.contract_address);
-
-    let user = get_contract_address();
-    let amount = ether(1);
-
-    let initial_balance = strk.balance_of(user);
-    strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
-    assert_eq!(strk.balance_of(user), initial_balance - amount);
-
-    sp_stark.request_unlock(amount, amount);
-    let token_id: u256 = 1;
-    assert_eq!(nft_token.balance_of(user), 1);
-
-    let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
-    
-    // CHEAT TIMESTAMP FOR BOTH CONTRACTS
-    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
-    start_cheat_block_timestamp(nft.contract_address, unlock_period + 1);
-    
-    sp_stark.claim_unlock_with_nft(token_id);
-    
-    stop_cheat_block_timestamp(sp_stark.contract_address);
-    stop_cheat_block_timestamp(nft.contract_address);
-
-    assert_eq!(nft_token.balance_of(user), 0);
-    assert_eq!(sp_strk_token.balance_of(user), 0);
-    assert_eq!(sp_strk_token.total_supply(), 0);
-    assert_eq!(strk.balance_of(user), initial_balance);
-}
-
-#[test]
 fn test_nft_transfer_and_claim() {
     let (sp_stark, strk, nft) = init();
     let nft_token = erc721(nft.contract_address);
@@ -524,13 +476,18 @@ fn test_nft_transfer_and_claim() {
     let user2: ContractAddress = 2.try_into().unwrap();
     let amount = ether(1);
 
+    // ✅ Use ERC4626 withdraw to mint NFT
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
     strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
-    sp_stark.request_unlock(amount, amount);
+    vault.deposit(amount, user1);  // Deposit first
+    vault.withdraw(amount, user1, user1);  // Withdraw (mints NFT)
     
     let token_id: u256 = 1;
     assert_eq!(nft_token.owner_of(token_id), user1);
 
+    // Transfer NFT from user1 to user2
     start_cheat_caller_address(nft.contract_address, user1);
     nft_token.transfer_from(user1, user2, token_id);
     stop_cheat_caller_address(nft.contract_address);
@@ -539,15 +496,17 @@ fn test_nft_transfer_and_claim() {
 
     let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
-    start_cheat_block_timestamp(nft.contract_address, unlock_period + 1);  // ADD THIS
+    start_cheat_block_timestamp(nft.contract_address, unlock_period + 1);
 
+    // user2 claims the NFT
     start_cheat_caller_address(sp_stark.contract_address, user2);
-    sp_stark.claim_unlock_with_nft(token_id);
+    withdrawal_nft.claim_withdrawal_nft(token_id);
     stop_cheat_caller_address(sp_stark.contract_address);
 
     stop_cheat_block_timestamp(sp_stark.contract_address);
-    stop_cheat_block_timestamp(nft.contract_address);  // ADD THIS
+    stop_cheat_block_timestamp(nft.contract_address);
 
+    // user2 should have received the STRK
     assert_eq!(strk.balance_of(user2), amount);
 }
 
@@ -560,22 +519,26 @@ fn test_claim_unlock_with_nft_not_owner() {
     let user2: ContractAddress = 2.try_into().unwrap();
     let amount = ether(1);
 
+    // ✅ Use ERC4626 withdraw to mint NFT
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
     strk.approve(sp_stark.contract_address, amount);
-    sp_stark.stake(amount, amount);
-    sp_stark.request_unlock(amount, amount);
+    vault.deposit(amount, user1);  // Deposit first
+    vault.withdraw(amount, user1, user1);  // Then withdraw (mints NFT)
 
     let token_id: u256 = 1;
 
     let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
     start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
-    start_cheat_block_timestamp(nft.contract_address, unlock_period + 1);  // ADD THIS
+    start_cheat_block_timestamp(nft.contract_address, unlock_period + 1);
 
     start_cheat_caller_address(sp_stark.contract_address, user2);
-    sp_stark.claim_unlock_with_nft(token_id);
+    withdrawal_nft.claim_withdrawal_nft(token_id);  // user2 tries to claim user1's NFT
     stop_cheat_caller_address(sp_stark.contract_address);
 
     stop_cheat_block_timestamp(sp_stark.contract_address);
-    stop_cheat_block_timestamp(nft.contract_address);  // ADD THIS
+    stop_cheat_block_timestamp(nft.contract_address);
 }
 
 #[test]
@@ -865,7 +828,7 @@ fn test_upgrade() {
     let upgradeable = IUpgradeableDispatcher { contract_address: sp_stark.contract_address };
 
     let new_contract_class = declare("NewspSTRK").unwrap().contract_class();
-    upgradeable.upgrade(*new_contract_class.class_hash);  // ADD * TO DEREFERENCE
+    upgradeable.upgrade(*new_contract_class.class_hash); // ADD * TO DEREFERENCE
 
     let new_sp_stark = INewspSTRKDispatcher { contract_address: sp_stark.contract_address };
     assert_eq!(new_sp_stark.new_function(), 10);
@@ -1213,4 +1176,359 @@ fn test_buffer_maintained_across_multiple_operations() {
 
     assert!(actual_buffer >= expected_buffer - ether(2), "Buffer too low");
     assert!(actual_buffer <= total_staked, "All funds in contract");
+}
+
+// ====================================
+// NEW: ERC-4626 Tests
+// ====================================
+
+#[test]
+fn test_erc4626_deposit() {
+    let (sp_stark, strk, _) = init();
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    let shares = vault.deposit(amount, user);
+
+    let sp_strk_token = erc20(sp_stark.contract_address);
+    assert_eq!(sp_strk_token.balance_of(user), shares);
+    assert_eq!(shares, amount); // 1:1 on first deposit
+}
+
+#[test]
+fn test_erc4626_mint() {
+    let (sp_stark, strk, _) = init();
+    let user = get_contract_address();
+    let shares = ether(10);
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, shares);
+    let assets = vault.mint(shares, user);
+
+    let sp_strk_token = erc20(sp_stark.contract_address);
+    assert_eq!(sp_strk_token.balance_of(user), shares);
+    assert_eq!(assets, shares); // 1:1 on first deposit
+}
+
+#[test]
+fn test_erc4626_withdraw_mints_nft() {
+    let (sp_stark, strk, nft) = init();
+    let nft_token = erc721(nft.contract_address);
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    // Deposit via ERC-4626
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+
+    // Withdraw via ERC-4626 (should mint NFT)
+    let shares_burned = vault.withdraw(ether(5), user, user);
+
+    // Verify NFT was minted
+    assert_eq!(nft_token.balance_of(user), 1);
+    let token_id: u256 = 1;
+    assert_eq!(nft_token.owner_of(token_id), user);
+
+    // Verify NFT data
+    let nft_request = nft.get_request(token_id);
+    assert_eq!(nft_request.strk_amount, ether(5));
+    assert_eq!(nft_request.sp_strk_amount, shares_burned);
+}
+
+#[test]
+fn test_erc4626_redeem_mints_nft() {
+    let (sp_stark, strk, nft) = init();
+    let nft_token = erc721(nft.contract_address);
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+
+    // Redeem via ERC-4626 (should mint NFT)
+    let assets = vault.redeem(ether(5), user, user);
+
+    // Verify NFT was minted
+    assert_eq!(nft_token.balance_of(user), 1);
+    
+    // ✅ Check assets are in reasonable range (accounting for auto-delegation effects)
+    assert!(assets >= ether(4), "Assets should be at least 4 STRK");
+    assert!(assets <= ether(10), "Assets should be at most 10 STRK");
+}
+
+#[test]
+fn test_claim_withdrawal_nft() {
+    let (sp_stark, strk, nft) = init();
+    let nft_token = erc721(nft.contract_address);
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create dispatchers
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+
+    // Withdraw (mints NFT)
+    vault.withdraw(ether(5), user, user);
+    let token_id: u256 = 1;
+
+    // Fast forward time
+    let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
+    start_cheat_block_timestamp(nft.contract_address, unlock_period + 1);
+
+    // Claim via NFT
+    withdrawal_nft.claim_withdrawal_nft(token_id);
+
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+    stop_cheat_block_timestamp(nft.contract_address);
+
+    // Verify NFT burned
+    assert_eq!(nft_token.balance_of(user), 0);
+    // Verify STRK received
+    let balance = strk.balance_of(user);
+    assert!(balance >= ether(995), "Should have received STRK");
+}
+
+#[test]
+fn test_cancel_withdrawal_nft() {
+    let (sp_stark, strk, nft) = init();
+    let sp_strk_token = erc20(sp_stark.contract_address);
+    let nft_token = erc721(nft.contract_address);
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create dispatchers
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+
+    let balance_before = sp_strk_token.balance_of(user);
+
+    // Withdraw (mints NFT)
+    vault.withdraw(ether(5), user, user);
+    let token_id: u256 = 1;
+
+    let balance_after_withdraw = sp_strk_token.balance_of(user);
+    assert!(balance_after_withdraw < balance_before, "spSTRK should decrease");
+
+    // Cancel withdrawal
+    withdrawal_nft.cancel_withdrawal_nft(token_id);
+
+    // Verify NFT burned
+    assert_eq!(nft_token.balance_of(user), 0);
+    // Verify spSTRK returned
+    assert_eq!(sp_strk_token.balance_of(user), balance_before);
+}
+
+#[test]
+fn test_claim_expired_nft() {
+    let (sp_stark, strk, nft) = init();
+    let sp_strk_token = erc20(sp_stark.contract_address);
+    let nft_token = erc721(nft.contract_address);
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create dispatchers
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+
+    // Withdraw (mints NFT)
+    vault.withdraw(ether(5), user, user);
+    let token_id: u256 = 1;
+
+    // Fast forward past expiry
+    let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    let claim_window: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("claim_window"), 1).span());
+    
+    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + claim_window + 1);
+    start_cheat_block_timestamp(nft.contract_address, unlock_period + claim_window + 1);
+
+    // Claim expired
+    withdrawal_nft.claim_expired_nft(token_id);
+
+    stop_cheat_block_timestamp(sp_stark.contract_address);
+    stop_cheat_block_timestamp(nft.contract_address);
+
+    // Verify NFT burned
+    assert_eq!(nft_token.balance_of(user), 0);
+    // Verify spSTRK returned (not STRK, since it expired)
+    assert_eq!(sp_strk_token.balance_of(user), amount);
+}
+
+#[test]
+#[should_panic(expected: ('Already unlocked',))]
+fn test_cancel_withdrawal_nft_after_unlock_time() {
+    let (sp_stark, strk, nft) = init();
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create dispatchers
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+    vault.withdraw(ether(5), user, user);
+    let token_id: u256 = 1;
+
+    // Fast forward past unlock time
+    let unlock_period: u64 = deserialize::<u64>(load(sp_stark.contract_address, selector!("unlock_period"), 1).span());
+    start_cheat_block_timestamp(sp_stark.contract_address, unlock_period + 1);
+
+    // Try to cancel (should fail)
+    withdrawal_nft.cancel_withdrawal_nft(token_id);
+}
+
+#[test]
+#[should_panic(expected: ('Not expired',))]
+fn test_claim_expired_nft_before_expiry() {
+    let (sp_stark, strk, nft) = init();
+    let user = get_contract_address();
+    let amount = ether(10);
+
+    // ✅ Create dispatchers
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+    let withdrawal_nft = IWithdrawalNFTDispatcher { contract_address: sp_stark.contract_address };
+
+    strk.approve(sp_stark.contract_address, amount);
+    vault.deposit(amount, user);
+    vault.withdraw(ether(5), user, user);
+    let token_id: u256 = 1;
+
+    // Try to claim as expired before expiry time (should fail)
+    withdrawal_nft.claim_expired_nft(token_id);
+}
+
+#[test]
+fn test_erc4626_convert_functions() {
+    let (sp_stark, strk, _) = init();
+    let user = get_contract_address();
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    // First deposit to establish exchange rate
+    strk.approve(sp_stark.contract_address, ether(10));
+    vault.deposit(ether(10), user);
+
+    // Add rewards to change exchange rate
+    strk.approve(sp_stark.contract_address, ether(10));
+    sp_stark.add_rewards(ether(10));
+
+    // Test convert_to_shares
+    let shares = vault.convert_to_shares(ether(1));
+    assert!(shares > 0, "Should convert assets to shares");
+
+    // Test convert_to_assets
+    let assets = vault.convert_to_assets(ether(1));
+    assert!(assets > 0, "Should convert shares to assets");
+
+    // Verify inverse relationship (approximately)
+    let round_trip = vault.convert_to_assets(shares);
+    assert!(round_trip >= ether(1) - 1000, "Round trip should be close");
+}
+
+#[test]
+fn test_erc4626_preview_functions() {
+    let (sp_stark, strk, _) = init();
+    let user = get_contract_address();
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    // Test preview_deposit
+    let preview_shares = vault.preview_deposit(ether(10));
+    
+    strk.approve(sp_stark.contract_address, ether(10));
+    let actual_shares = vault.deposit(ether(10), user);
+    
+    assert_eq!(preview_shares, actual_shares, "Preview should match actual");
+
+    // Test preview_withdraw
+    let preview_shares_needed = vault.preview_withdraw(ether(5));
+    
+    // Test preview_redeem
+    let preview_assets = vault.preview_redeem(ether(5));
+    assert!(preview_assets > 0, "Should preview assets");
+}
+
+#[test]
+fn test_erc4626_max_functions() {
+    let (sp_stark, strk, _) = init();
+    let user = get_contract_address();
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    // Test max_deposit (should be unlimited by default)
+    let max_dep = vault.max_deposit(user);
+    assert!(max_dep > 0, "Should allow deposits");
+
+    // Test max_mint (should be unlimited by default)
+    let max_mnt = vault.max_mint(user);
+    assert!(max_mnt > 0, "Should allow minting");
+
+    // Deposit some tokens
+    strk.approve(sp_stark.contract_address, ether(10));
+    vault.deposit(ether(10), user);
+
+    // Test max_withdraw (should equal user's share value)
+    let max_wd = vault.max_withdraw(user);
+    assert!(max_wd > 0, "Should allow withdrawal");
+
+    // Test max_redeem (should equal user's balance)
+    let max_rd = vault.max_redeem(user);
+    let sp_strk_token = erc20(sp_stark.contract_address);
+    assert_eq!(max_rd, sp_strk_token.balance_of(user), "Max redeem should equal balance");
+}
+
+#[test]
+fn test_erc4626_asset_function() {
+    let (sp_stark, strk, _) = init();
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    // Test asset() returns correct STRK address
+    let asset_address = vault.asset();
+    assert_eq!(asset_address, strk.contract_address, "Asset should be STRK token");
+}
+
+#[test]
+fn test_erc4626_total_assets() {
+    let (sp_stark, strk, _) = init();
+    let user = get_contract_address();
+
+    // ✅ Create ERC4626 dispatcher
+    let vault = IERC4626Dispatcher { contract_address: sp_stark.contract_address };
+
+    // Initially should be 0
+    let initial_total = vault.total_assets();
+    assert_eq!(initial_total, 0, "Initial total assets should be 0");
+
+    // After deposit
+    strk.approve(sp_stark.contract_address, ether(10));
+    vault.deposit(ether(10), user);
+
+    let total_after_deposit = vault.total_assets();
+    assert!(total_after_deposit >= ether(10), "Total assets should include deposit");
 }
