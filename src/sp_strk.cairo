@@ -91,6 +91,9 @@ pub mod spSTRK {
         pending_validator_unbonding: u256,
         // Timestamp when unbonding completes
         validator_unbond_time: u64,
+
+        previously_delegated: bool,
+
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -295,6 +298,8 @@ pub mod spSTRK {
         //validaot pool initialization
         self.validator_pool.write(params.validator_pool);
 
+        self.previously_delegated.write(false);
+
         self._set_fees(params.dao_fee_basis_points, params.dev_fee_basis_points);
         self._set_min_stake_amount(params.min_stake_amount);
         self._set_unlock_period(params.unlock_period);
@@ -452,8 +457,6 @@ pub mod spSTRK {
             let request = self.unlock_requests.entry((user, request_index)).read();
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
-            // Validate unlock request
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
             // Ensure request has not expired
             assert(request.expiry_time >= get_block_timestamp(), Errors::REQUEST_EXPIRED);
             // Ensure unlock time has passed
@@ -524,9 +527,6 @@ pub mod spSTRK {
             assert(request_index < request_count, 'Invalid request index');
 
             let request = self.unlock_requests.entry((user, request_index)).read();
-
-            // Ensure a valid unlock request exists
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             let strk_amount = request.strk_amount;
 
@@ -1206,9 +1206,10 @@ pub mod spSTRK {
                 if to_delegate > 10_000_000_000_000_000 { // 0.01 STRK
                     let current_delegated = self.total_delegated_to_validator.read();
 
-                    if current_delegated == 0 {
+                    if !self.previously_delegated.read() {
                         // First time delegation
                         self._enter_delegation_pool(to_delegate);
+                        self.previously_delegated.write(true);
                     } else {
                         // Add to existing delegation
                         self._add_to_delegation_pool(to_delegate);
