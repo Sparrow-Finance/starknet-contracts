@@ -182,6 +182,8 @@ pub mod spSTRK {
         // Timestamp when unbonding completes
         validator_unbond_time: u64,
         withdrawal_queue_nft: ContractAddress,
+        previously_delegated: bool,
+
         #[substorage(v0)]
         erc20: ERC20Component::Storage,
         #[substorage(v0)]
@@ -360,6 +362,7 @@ pub mod spSTRK {
         ValidatorUnbondingStarted: ValidatorUnbondingStarted,
         ValidatorUnbondingCompleted: ValidatorUnbondingCompleted,
         DelegatedToValidator: DelegatedToValidator,
+        
         #[flat]
         ERC20Event: ERC20Component::Event,
         #[flat]
@@ -390,6 +393,8 @@ pub mod spSTRK {
         self.strk_token.write(params.strk_token);
         //validaot pool initialization
         self.validator_pool.write(params.validator_pool);
+
+        self.previously_delegated.write(false);
 
         self.withdrawal_queue_nft.write(params.withdrawal_queue_nft);
 
@@ -831,7 +836,6 @@ pub mod spSTRK {
             assert(request_index < request_count, Errors::INVALID_REQUEST_INDEX);
 
             let request = self.unlock_requests.entry((user, request_index)).read();
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             // Validate unlock request
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
@@ -910,9 +914,6 @@ pub mod spSTRK {
             assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             let strk_amount = request.strk_amount;
-
-            // Ensure a valid unlock request exists
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             self.total_locked_in_unlocks.write(self.total_locked_in_unlocks.read() - strk_amount);
 
@@ -1421,10 +1422,6 @@ pub mod spSTRK {
             let pending = self.pending_validator_unbonding.read();
             assert(pending > 0, 'No pending unbonding');
 
-            // REMOVED: Time check - let validator pool handle this
-            // let unbond_time = self.validator_unbond_time.read();
-            // assert(get_block_timestamp() >= unbond_time, 'Unbonding period not finished');
-
             // Complete unbonding - STRK returns to contract
             // This will revert if the validator pool's unbonding period is not finished
             let returned_amount = self._complete_unbonding_from_validator();
@@ -1591,13 +1588,13 @@ pub mod spSTRK {
             if contract_balance > min_buffer {
                 let to_delegate = contract_balance - min_buffer;
 
-                // Only delegate if amount is meaningful (> 0.01 STRK to avoid dust)
-                if to_delegate > 10_000_000_000_000_000 { // 0.01 STRK
+                if to_delegate > 0 {
                     let current_delegated = self.total_delegated_to_validator.read();
 
-                    if current_delegated == 0 {
+                    if !self.previously_delegated.read() {
                         // First time delegation
                         self._enter_delegation_pool(to_delegate);
+                        self.previously_delegated.write(true);
                     } else {
                         // Add to existing delegation
                         self._add_to_delegation_pool(to_delegate);
