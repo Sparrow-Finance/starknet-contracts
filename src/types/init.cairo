@@ -19,4 +19,6 @@ pub struct InitParams {
     pub claim_window: u64,
     // Validator pool contract address
     pub validator_pool: ContractAddress,
+
+    pub withdrawal_queue_nft: ContractAddress,
 }

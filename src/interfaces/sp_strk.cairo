@@ -13,6 +13,25 @@ pub struct UnlockRequest {
     pub expiry_time: u64,
 }
 
+// ========== NEW: NFT-based withdrawal functions ==========
+#[starknet::interface]
+pub trait IWithdrawalNFT<TContractState> {
+    /// Claim withdrawal using NFT
+    fn claim_withdrawal_nft(ref self: TContractState, token_id: u256);
+    
+    /// Cancel withdrawal and get spSTRK back
+    fn cancel_withdrawal_nft(ref self: TContractState, token_id: u256);
+    
+    /// Claim expired withdrawal (returns spSTRK)
+    fn claim_expired_nft(ref self: TContractState, token_id: u256);
+    
+    /// Get withdrawal NFT data (request, is_ready, is_expired)
+    fn get_withdrawal_nft_data(
+        self: @TContractState, 
+        token_id: u256
+    ) -> (UnlockRequest, bool, bool);
+}
+
 #[starknet::interface]
 pub trait IspSTRK<TContractState> {
     // ====================================
@@ -52,9 +71,9 @@ pub trait IspSTRK<TContractState> {
     // ====================================
 
     /// Deposit STRK tokens
-    fn deposit(ref self: TContractState, strk_amount: u256);
+    fn admin_deposit(ref self: TContractState, strk_amount: u256);
     /// Withdraw STRK tokens
-    fn withdraw(ref self: TContractState, strk_amount: u256);
+    fn admin_withdraw(ref self: TContractState, strk_amount: u256);
     /// Add rewards to the staking pool
     fn add_rewards(ref self: TContractState, strk_amount: u256);
 
@@ -75,6 +94,8 @@ pub trait IspSTRK<TContractState> {
     fn pause(ref self: TContractState);
     /// Unpause the contract
     fn unpause(ref self: TContractState);
+
+    fn set_withdrawal_queue_nft(ref self: TContractState, nft_address: ContractAddress);
 
     /// Claim rewards from validator
     fn claim_validator_rewards(ref self: TContractState);

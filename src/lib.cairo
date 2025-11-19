@@ -5,6 +5,7 @@ pub mod components {
 pub mod interfaces {
     pub mod sp_strk;
     pub mod validator_pool;
+    pub mod withdrawal_queue;
 }
 
 pub mod mock {
@@ -18,3 +19,5 @@ pub mod types {
 }
 
 pub mod sp_strk;
+
+pub mod withdrawal_queue_nft;
