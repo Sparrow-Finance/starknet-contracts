@@ -182,6 +182,7 @@ pub mod spSTRK {
         // Timestamp when unbonding completes
         validator_unbond_time: u64,
         withdrawal_queue_nft: ContractAddress,
+
         previously_delegated: bool,
 
         #[substorage(v0)]
@@ -837,8 +838,6 @@ pub mod spSTRK {
 
             let request = self.unlock_requests.entry((user, request_index)).read();
 
-            // Validate unlock request
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
             // Ensure request has not expired
             assert(request.expiry_time >= get_block_timestamp(), Errors::REQUEST_EXPIRED);
             // Ensure unlock time has passed
@@ -909,9 +908,6 @@ pub mod spSTRK {
             assert(request_index < request_count, 'Invalid request index');
 
             let request = self.unlock_requests.entry((user, request_index)).read();
-
-            // Ensure a valid unlock request exists
-            assert(request.expiry_time != 0, Errors::REQUEST_NOT_EXIST);
 
             let strk_amount = request.strk_amount;
 
